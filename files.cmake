@@ -1529,3 +1529,12 @@ set(DUSK_HTTP_BACKEND_FILES
         src/dusk/http/winhttp.cpp
         src/dusk/http/url_session.mm
 )
+
+set(DUSK_MULTIPLAYER_FILES
+        include/dusk/net/net.h
+        include/dusk/net/queue.h
+        include/dusk/net/transport.h
+        src/dusk/net/net.cpp
+        src/dusk/net/transport.cpp
+        src/dusk/imgui/ImGuiCoopDebug.cpp
+)

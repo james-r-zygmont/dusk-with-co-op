@@ -29,6 +29,9 @@ namespace dusk {
         void ShowStateShare();
         void ShowInputViewer();
         void ShowActorSpawner();
+#if DUSK_ENABLE_MULTIPLAYER
+        void ShowCoopDebug();
+#endif
 
     private:
 		bool m_showDebugOverlay = false;
@@ -74,6 +77,10 @@ namespace dusk {
         bool m_showActorSpawner = false;
         int m_inputOverlayCorner = 3;
         std::string m_controllerName;
+#if DUSK_ENABLE_MULTIPLAYER
+        bool m_showCoopDebug = false;
+        int m_coopDebugCorner = 0;  // top-left
+#endif
     };
 }
 

@@ -57,6 +57,9 @@
 #include "dusk/iso_validate.hpp"
 #include "dusk/logging.h"
 #include "dusk/main.h"
+#if DUSK_ENABLE_MULTIPLAYER
+#include "dusk/net/net.h"
+#endif
 #include "dusk/ui/menu_bar.hpp"
 #include "dusk/ui/overlay.hpp"
 #include "dusk/ui/prelaunch.hpp"
@@ -307,6 +310,9 @@ void main01(void) {
                     dusk::frame_interp::begin_sim_tick();
                     mDoCPd_c::read();
                     dusk::gyro::read(pacing.sim_pace);
+#if DUSK_ENABLE_MULTIPLAYER
+                    dusk::net::Tick();
+#endif
                     fapGm_Execute();
                     mDoAud_Execute();
                     dusk::game_clock::commit_sim_tick();
@@ -329,6 +335,10 @@ void main01(void) {
             // Game Inputs
             mDoCPd_c::read();
             dusk::gyro::read(pacing.presentation_dt_seconds);
+
+#if DUSK_ENABLE_MULTIPLAYER
+            dusk::net::Tick();
+#endif
 
             // EXECUTE GAME LOGIC & RENDER
             // This calls mDoGph_Painter -> JFWDisplay -> GX Functions
@@ -730,6 +740,10 @@ int game_main(int argc, char* argv[]) {
     dusk::discord::initialize();
 #endif
 
+#if DUSK_ENABLE_MULTIPLAYER
+    dusk::net::Init();
+#endif
+
     VISetWindowTitle(
         fmt::format("Dusk {} [{}]", DUSK_WC_DESCRIBE, dusk::backend_name(auroraInfo.backend))
         .c_str());
@@ -754,6 +768,9 @@ int game_main(int argc, char* argv[]) {
         fflush(stderr);
 #ifdef DUSK_DISCORD
         dusk::discord::shutdown();
+#endif
+#if DUSK_ENABLE_MULTIPLAYER
+        dusk::net::Shutdown();
 #endif
         dusk::ui::shutdown();
         aurora_shutdown();
@@ -833,6 +850,9 @@ int game_main(int argc, char* argv[]) {
 #ifdef DUSK_DISCORD
                 dusk::discord::shutdown();
 #endif
+#if DUSK_ENABLE_MULTIPLAYER
+                dusk::net::Shutdown();
+#endif
                 dusk::ui::shutdown();
                 aurora_shutdown();
                 return 0;
@@ -906,6 +926,9 @@ int game_main(int argc, char* argv[]) {
 
 #ifdef DUSK_DISCORD
     dusk::discord::shutdown();
+#endif
+#if DUSK_ENABLE_MULTIPLAYER
+    dusk::net::Shutdown();
 #endif
     dusk::ui::shutdown();
     aurora_shutdown();
