@@ -15,6 +15,9 @@ pub enum AppError {
     #[error("session full")]
     SessionFull,
 
+    #[error("forbidden")]
+    Forbidden,
+
     #[error("iso hash mismatch")]
     IsoMismatch { server_hash: Vec<u8> },
 
@@ -47,6 +50,10 @@ impl IntoResponse for AppError {
             AppError::SessionFull => (
                 StatusCode::CONFLICT,
                 json!({ "error": "session_full" }),
+            ),
+            AppError::Forbidden => (
+                StatusCode::FORBIDDEN,
+                json!({ "error": "forbidden" }),
             ),
             AppError::IsoMismatch { server_hash } => (
                 StatusCode::CONFLICT,

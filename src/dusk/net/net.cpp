@@ -4,6 +4,7 @@
 #include "dusk/net/api_client.h"
 #include "dusk/net/replication.h"
 #include "dusk/net/save_codec.h"
+#include "dusk/net/save_sync.h"
 #include "dusk/net/transport.h"
 #include "dusk/net/wire.h"
 
@@ -32,6 +33,17 @@ std::atomic<HandshakeError> g_handshakeError{HandshakeError::None};
 std::mutex g_stringMutex;
 std::string g_sessionCode;
 std::string g_lastErrorMessage;
+std::string g_baseUrl;     // http(s)://host:port for the REST endpoints
+std::string g_authToken;   // host_token (we hosted) or guest_token (we joined)
+
+// Canonical-save sync (M4 chunk 1). The flags are set from HostSession /
+// JoinSession / the debug HUD (any thread) and consumed on the sim thread in
+// Tick() -> MaybeSyncCanonicalSave(), which does the REST round-trip there
+// (one-frame hitch — acceptable for a one-shot on join/host; chunk 3's
+// periodic autosave commits will move to a worker thread).
+std::atomic<bool> g_wantPushSave{false};
+std::atomic<bool> g_wantPullSave{false};
+std::atomic<std::uint32_t> g_canonicalSaveVersion{0};
 
 // Pending Hello to emit when the transport first hits Connected.
 bool g_hasPendingHello = false;
@@ -94,6 +106,51 @@ bool ValidIsoHashSize(std::span<const std::uint8_t> h) {
     return h.size() == wire::kIsoHashLen;
 }
 
+// Sim-thread: if a canonical-save push/pull was requested and the session is
+// up (transport Connected, handshake done so the token is validated), do the
+// REST round-trip. Synchronous — blocks the sim thread for the request, which
+// is one frame on a LAN/localhost relay and only happens once per host/join.
+void MaybeSyncCanonicalSave() {
+    if (!g_transport || g_transport->state() != TransportState::Connected) return;
+    if (g_playerIndex.load(std::memory_order_relaxed) == 0xFF) return;
+
+    const bool push = g_wantPushSave.exchange(false, std::memory_order_relaxed);
+    const bool pull = g_wantPullSave.exchange(false, std::memory_order_relaxed);
+    if (!push && !pull) return;
+
+    const std::string base = ReadString(g_baseUrl);
+    const std::string code = ReadString(g_sessionCode);
+    const std::string token = ReadString(g_authToken);
+    if (base.empty() || code.empty() || token.empty()) return;
+
+    if (push) {
+        auto blob = save_sync::SerializeLocalSave();
+        if (blob.empty()) {
+            DuskLog.warn("dusk::net: SerializeLocalSave produced nothing; not pushing");
+        } else {
+            auto r = ApiPutSessionSave(base, code, token, blob);
+            if (r.ok()) {
+                g_canonicalSaveVersion.store(r.value(), std::memory_order_relaxed);
+                DuskLog.debug("dusk::net: pushed canonical save -> version {}", r.value());
+            } else {
+                DuskLog.warn("dusk::net: push canonical save failed: {}", r.error().message);
+            }
+        }
+    }
+    if (pull) {
+        auto r = ApiGetSessionSave(base, code, token);
+        if (r.ok()) {
+            g_canonicalSaveVersion.store(r.value().save_version, std::memory_order_relaxed);
+            if (save_sync::ApplyCanonicalSave(r.value().blob)) {
+                DuskLog.debug("dusk::net: pulled+applied canonical save (version {})",
+                              r.value().save_version);
+            }
+        } else {
+            DuskLog.warn("dusk::net: pull canonical save failed: {}", r.error().message);
+        }
+    }
+}
+
 }  // namespace
 
 bool Init() {
@@ -134,6 +191,11 @@ bool HostSession(const HostSessionConfig& cfg) {
     }
     const auto& resp = result.value();
     SetString(g_sessionCode, resp.session_code);
+    SetString(g_baseUrl, cfg.base_url);
+    SetString(g_authToken, resp.host_token);
+    g_canonicalSaveVersion.store(0, std::memory_order_relaxed);
+    g_wantPushSave.store(true, std::memory_order_relaxed);   // upload our save once connected
+    g_wantPullSave.store(false, std::memory_order_relaxed);
 
     // Build the Hello we'll emit once the WS reaches Connected.
     wire::Hello hello;
@@ -172,6 +234,11 @@ bool JoinSession(const JoinSessionConfig& cfg) {
     }
     const auto& resp = result.value();
     SetString(g_sessionCode, cfg.session_code);
+    SetString(g_baseUrl, cfg.base_url);
+    SetString(g_authToken, resp.guest_token);
+    g_canonicalSaveVersion.store(0, std::memory_order_relaxed);
+    g_wantPushSave.store(false, std::memory_order_relaxed);
+    g_wantPullSave.store(true, std::memory_order_relaxed);   // adopt the host's canonical save
 
     wire::Hello hello;
     hello.protocol_version = wire::kProtocolVersion;
@@ -192,7 +259,17 @@ void Disconnect() {
     g_hasPendingHello = false;
     ResetHandshakeState();
     SetString(g_sessionCode, {});
+    SetString(g_baseUrl, {});
+    SetString(g_authToken, {});
+    g_wantPushSave.store(false, std::memory_order_relaxed);
+    g_wantPullSave.store(false, std::memory_order_relaxed);
     replication::DespawnPuppet();
+}
+
+void RequestPushCanonicalSave() { g_wantPushSave.store(true, std::memory_order_relaxed); }
+void RequestPullCanonicalSave() { g_wantPullSave.store(true, std::memory_order_relaxed); }
+std::uint32_t GetCanonicalSaveVersion() {
+    return g_canonicalSaveVersion.load(std::memory_order_relaxed);
 }
 
 void Tick() {
@@ -266,6 +343,7 @@ void Tick() {
             *decoded);
     }
 
+    MaybeSyncCanonicalSave();
     replication::Tick();
 }
 

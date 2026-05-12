@@ -6,6 +6,7 @@
 #include <span>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace dusk::net {
 
@@ -20,6 +21,11 @@ struct CreateSessionResponse {
 struct JoinSessionResponse {
     std::string guest_token;
     std::uint8_t player_index;
+};
+
+struct SaveBlobResponse {
+    std::vector<std::uint8_t> blob;       // save_codec-encoded canonical save
+    std::uint32_t save_version = 0;
 };
 
 enum class ApiErrorKind {
@@ -72,6 +78,21 @@ ApiResult<JoinSessionResponse> ApiJoinSession(
     const std::string& session_code,
     const std::string& display_name,
     std::span<const std::uint8_t> iso_hash);
+
+// PUT /v1/sessions/{code}/save?token=...  — overwrites the canonical save
+// blob and returns the new save_version. No optimistic-concurrency check yet
+// (M4 chunk 3 adds CAS on save_version).
+ApiResult<std::uint32_t> ApiPutSessionSave(
+    const std::string& base_url,
+    const std::string& session_code,
+    const std::string& token,
+    std::span<const std::uint8_t> blob);
+
+// GET /v1/sessions/{code}/save?token=...
+ApiResult<SaveBlobResponse> ApiGetSessionSave(
+    const std::string& base_url,
+    const std::string& session_code,
+    const std::string& token);
 
 }  // namespace dusk::net
 

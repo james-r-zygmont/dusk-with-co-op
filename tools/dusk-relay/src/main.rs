@@ -89,6 +89,10 @@ async fn main() -> Result<()> {
         .route("/v1/sessions", post(routes::create_session))
         .route("/v1/sessions/:code", get(routes::get_session))
         .route("/v1/sessions/:code/join", post(routes::join_session))
+        .route(
+            "/v1/sessions/:code/save",
+            get(routes::get_session_save).put(routes::put_session_save),
+        )
         .route("/v1/session/:code/ws", get(ws::ws_handler))
         .with_state(state)
         .layer(TraceLayer::new_for_http());

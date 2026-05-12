@@ -40,6 +40,14 @@ bool HostSession(const HostSessionConfig& cfg);
 bool JoinSession(const JoinSessionConfig& cfg);
 void Disconnect();
 
+// Canonical-save sync (M4 chunk 1). HostSession schedules a push and
+// JoinSession a pull automatically; these let the debug HUD trigger one on
+// demand. The actual REST round-trip + dSv_save_c overwrite happens on the
+// sim thread inside Tick() once the session handshake has completed.
+void RequestPushCanonicalSave();   // upload local dSv_save_c to the relay
+void RequestPullCanonicalSave();   // download + apply the relay's canonical save
+std::uint32_t GetCanonicalSaveVersion();  // 0 until a push/pull has succeeded
+
 // Push one binary frame onto the wire (debug HUD only at M2; real packets
 // from later milestones go through a typed helper).
 bool Send(std::span<const std::uint8_t> frame);

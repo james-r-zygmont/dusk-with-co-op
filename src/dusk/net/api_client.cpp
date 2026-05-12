@@ -44,6 +44,19 @@ bool hex_decode_iso(const std::string& s, std::array<std::uint8_t, kIsoHashLen>&
     return true;
 }
 
+bool hex_decode(const std::string& s, std::vector<std::uint8_t>& out) {
+    if (s.size() % 2 != 0) return false;
+    out.clear();
+    out.reserve(s.size() / 2);
+    for (std::size_t i = 0; i < s.size(); i += 2) {
+        int hi = hex_nibble(s[i]);
+        int lo = hex_nibble(s[i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        out.push_back(static_cast<std::uint8_t>((hi << 4) | lo));
+    }
+    return true;
+}
+
 ApiErrorKind classify_error_code(const std::string& code) {
     if (code == "iso_mismatch") return ApiErrorKind::IsoMismatch;
     if (code == "session_not_found") return ApiErrorKind::SessionNotFound;
@@ -87,6 +100,19 @@ ix::HttpResponsePtr do_post_json(const std::string& url, const std::string& json
     auto args = client.createRequest(url, ix::HttpClient::kPost);
     args->extraHeaders["Content-Type"] = "application/json";
     return client.post(url, json_body, args);
+}
+
+ix::HttpResponsePtr do_put_json(const std::string& url, const std::string& json_body) {
+    ix::HttpClient client(/*async=*/ false);
+    auto args = client.createRequest(url, ix::HttpClient::kPut);
+    args->extraHeaders["Content-Type"] = "application/json";
+    return client.put(url, json_body, args);
+}
+
+ix::HttpResponsePtr do_get(const std::string& url) {
+    ix::HttpClient client(/*async=*/ false);
+    auto args = client.createRequest(url, ix::HttpClient::kGet);
+    return client.get(url, args);
 }
 
 }  // namespace
@@ -168,6 +194,74 @@ ApiResult<JoinSessionResponse> ApiJoinSession(
         err.http_status = resp->statusCode;
         err.message = std::string("body parse: ") + e.what();
         return ApiResult<JoinSessionResponse>::failure(std::move(err));
+    }
+}
+
+ApiResult<std::uint32_t> ApiPutSessionSave(
+    const std::string& base_url,
+    const std::string& session_code,
+    const std::string& token,
+    std::span<const std::uint8_t> blob)
+{
+    const std::string url =
+        base_url + "/v1/sessions/" + session_code + "/save?token=" + token;
+    const json body = {{"blob", hex_encode(blob)}};
+    auto resp = do_put_json(url, body.dump());
+    if (resp->statusCode == 0) {
+        DuskLog.warn("dusk::net: PutSessionSave network error: {}", resp->errorMsg);
+        return ApiResult<std::uint32_t>::failure(make_network_error(0, resp->errorMsg));
+    }
+    if (resp->statusCode != 200) {
+        return ApiResult<std::uint32_t>::failure(
+            parse_typed_error(resp->statusCode, resp->body));
+    }
+    try {
+        const auto j = json::parse(resp->body);
+        return ApiResult<std::uint32_t>::success(j.at("save_version").get<std::uint32_t>());
+    } catch (const std::exception& e) {
+        ApiError err;
+        err.kind = ApiErrorKind::UnexpectedResponse;
+        err.http_status = resp->statusCode;
+        err.message = std::string("body parse: ") + e.what();
+        return ApiResult<std::uint32_t>::failure(std::move(err));
+    }
+}
+
+ApiResult<SaveBlobResponse> ApiGetSessionSave(
+    const std::string& base_url,
+    const std::string& session_code,
+    const std::string& token)
+{
+    const std::string url =
+        base_url + "/v1/sessions/" + session_code + "/save?token=" + token;
+    auto resp = do_get(url);
+    if (resp->statusCode == 0) {
+        DuskLog.warn("dusk::net: GetSessionSave network error: {}", resp->errorMsg);
+        return ApiResult<SaveBlobResponse>::failure(make_network_error(0, resp->errorMsg));
+    }
+    if (resp->statusCode != 200) {
+        return ApiResult<SaveBlobResponse>::failure(
+            parse_typed_error(resp->statusCode, resp->body));
+    }
+    try {
+        const auto j = json::parse(resp->body);
+        SaveBlobResponse out;
+        out.save_version = j.at("save_version").get<std::uint32_t>();
+        const std::string hex = j.at("blob").get<std::string>();
+        if (!hex_decode(hex, out.blob)) {
+            ApiError err;
+            err.kind = ApiErrorKind::UnexpectedResponse;
+            err.http_status = resp->statusCode;
+            err.message = "save blob hex unparseable";
+            return ApiResult<SaveBlobResponse>::failure(std::move(err));
+        }
+        return ApiResult<SaveBlobResponse>::success(std::move(out));
+    } catch (const std::exception& e) {
+        ApiError err;
+        err.kind = ApiErrorKind::UnexpectedResponse;
+        err.http_status = resp->statusCode;
+        err.message = std::string("body parse: ") + e.what();
+        return ApiResult<SaveBlobResponse>::failure(std::move(err));
     }
 }
 

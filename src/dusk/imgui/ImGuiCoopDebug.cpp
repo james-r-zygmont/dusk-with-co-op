@@ -202,6 +202,21 @@ void ImGuiMenuTools::ShowCoopDebug() {
         }
         ImGui::EndDisabled();
 
+        // Canonical save sync (M4 chunk 1). Host pushes on connect, guest pulls
+        // on connect; these force an extra round-trip. Version 0 = none yet.
+        ImGui::Separator();
+        ImGuiStringViewText(fmt::format(FMT_STRING("Canonical save version: {}\n"),
+            net::GetCanonicalSaveVersion()));
+        ImGui::BeginDisabled(disconnected);
+        if (ImGui::Button("Push save")) {
+            net::RequestPushCanonicalSave();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Pull save")) {
+            net::RequestPullCanonicalSave();
+        }
+        ImGui::EndDisabled();
+
         ShowCornerContextMenu(m_coopDebugCorner, m_debugOverlayCorner);
     }
     ImGui::End();

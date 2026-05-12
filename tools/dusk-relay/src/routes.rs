@@ -5,7 +5,7 @@
 //! placeholder save row created here is an empty save_codec blob).
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
 use rusqlite::params;
@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::auth::{self, SESSION_CODE_LEN};
+#[allow(unused_imports)]
 use crate::db::Db;
 use crate::error::AppError;
 use crate::save_codec;
@@ -200,11 +201,138 @@ pub async fn get_session(
     Ok(Json(status))
 }
 
+// --- canonical save (M4 chunk 1) ---------------------------------------------
+
+#[derive(Deserialize)]
+pub struct SaveTokenQuery {
+    pub token: String,
+}
+
+#[derive(Deserialize)]
+pub struct PutSaveRequest {
+    pub blob: String, // hex-encoded save_codec blob
+}
+
+#[derive(Serialize)]
+pub struct PutSaveResponse {
+    pub save_version: i64,
+}
+
+#[derive(Serialize)]
+pub struct GetSaveResponse {
+    pub blob: String, // hex-encoded save_codec blob
+    pub save_version: i64,
+}
+
+// PUT /v1/sessions/{code}/save?token=...  — overwrite the canonical save blob.
+// No optimistic-concurrency check yet (M4 chunk 3 adds CAS on save_version).
+pub async fn put_session_save(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+    Query(q): Query<SaveTokenQuery>,
+    Json(req): Json<PutSaveRequest>,
+) -> Result<Json<PutSaveResponse>, AppError> {
+    validate_code_shape(&code)?;
+    let blob = hex::decode(&req.blob).map_err(|_| AppError::BadRequest("blob must be hex".into()))?;
+    let now = unix_now_ms();
+
+    let db = state.db.clone();
+    let code_for_log = code.clone();
+    let new_version = tokio::task::spawn_blocking(move || -> Result<i64, AppError> {
+        db.with_conn(|conn| -> anyhow::Result<i64> {
+            let save_id = lookup_save_id_checked(conn, &code, &q.token)?;
+            conn.execute(
+                "UPDATE saves SET blob = ?1, save_version = save_version + 1, updated_at = ?2 \
+                 WHERE id = ?3",
+                params![blob, now, save_id],
+            )?;
+            let v: i64 = conn.query_row(
+                "SELECT save_version FROM saves WHERE id = ?1",
+                params![save_id],
+                |r| r.get(0),
+            )?;
+            Ok(v)
+        })
+        .map_err(map_lookup_err)
+    })
+    .await??;
+
+    tracing::info!(code = %code_for_log, version = new_version, "canonical save updated");
+    Ok(Json(PutSaveResponse { save_version: new_version }))
+}
+
+// GET /v1/sessions/{code}/save?token=...
+pub async fn get_session_save(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+    Query(q): Query<SaveTokenQuery>,
+) -> Result<Json<GetSaveResponse>, AppError> {
+    validate_code_shape(&code)?;
+
+    let db = state.db.clone();
+    let resp = tokio::task::spawn_blocking(move || -> Result<GetSaveResponse, AppError> {
+        db.with_conn(|conn| -> anyhow::Result<GetSaveResponse> {
+            let save_id = lookup_save_id_checked(conn, &code, &q.token)?;
+            let (blob, save_version): (Vec<u8>, i64) = conn.query_row(
+                "SELECT blob, save_version FROM saves WHERE id = ?1",
+                params![save_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            Ok(GetSaveResponse {
+                blob: hex::encode(blob),
+                save_version,
+            })
+        })
+        .map_err(map_lookup_err)
+    })
+    .await??;
+
+    Ok(Json(resp))
+}
+
 // --- helpers -----------------------------------------------------------------
 
 #[derive(Debug, thiserror::Error)]
 #[error("session not found")]
 struct NotFoundMarker;
+
+#[derive(Debug, thiserror::Error)]
+#[error("forbidden")]
+struct ForbiddenMarker;
+
+// Resolve a session's save_id, requiring `token` to match the host or guest
+// token. Runs inside a with_conn closure; failures are anyhow-wrapped marker
+// errors that map_lookup_err turns back into typed AppErrors.
+fn lookup_save_id_checked(
+    conn: &rusqlite::Connection,
+    code: &str,
+    token: &str,
+) -> anyhow::Result<i64> {
+    let (save_id, host_token, guest_token): (i64, String, String) = conn
+        .query_row(
+            "SELECT save_id, host_token, guest_token FROM sessions WHERE code = ?1",
+            params![code],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => anyhow::Error::new(NotFoundMarker),
+            other => anyhow::Error::new(other),
+        })?;
+    if token != host_token && token != guest_token {
+        return Err(anyhow::Error::new(ForbiddenMarker));
+    }
+    Ok(save_id)
+}
+
+fn map_lookup_err(e: anyhow::Error) -> AppError {
+    if e.downcast_ref::<NotFoundMarker>().is_some() {
+        AppError::SessionNotFound
+    } else if e.downcast_ref::<ForbiddenMarker>().is_some() {
+        AppError::Forbidden
+    } else {
+        AppError::Internal(e)
+    }
+}
 
 #[allow(dead_code)] // save_id and host_token consumed by the WS handler (M2 #15).
 struct SessionRow {
