@@ -388,6 +388,22 @@ if (DUSK_ENABLE_MULTIPLAYER)
     list(APPEND GAME_COMPILE_DEFS DUSK_ENABLE_MULTIPLAYER=1)
     list(APPEND DUSK_FILES ${DUSK_MULTIPLAYER_FILES})
     message(STATUS "dusk: Enabled multiplayer")
+
+    find_program(CARGO_EXECUTABLE cargo)
+    if (CARGO_EXECUTABLE)
+        set(DUSK_RELAY_MANIFEST ${CMAKE_SOURCE_DIR}/tools/dusk-relay/Cargo.toml)
+        # Always invoke cargo — it's fast when there's nothing to rebuild.
+        add_custom_target(dusk-relay ALL
+            COMMAND ${CARGO_EXECUTABLE} build --release --manifest-path ${DUSK_RELAY_MANIFEST}
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tools/dusk-relay
+            COMMENT "Building dusk-relay (cargo)"
+            VERBATIM
+        )
+        message(STATUS "dusk: dusk-relay will build via cargo (${CARGO_EXECUTABLE})")
+    else ()
+        message(STATUS "dusk: cargo not found — skipping dusk-relay build "
+            "(run cargo manually in tools/dusk-relay if needed)")
+    endif ()
 endif ()
 
 if(ANDROID)
