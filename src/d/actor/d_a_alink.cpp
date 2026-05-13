@@ -4597,50 +4597,63 @@ void daAlink_c::playerInit() {
     onNoResetFlg0(FLG0_SWIM_UP);
     offOxygenTimer();
 
-    int startMode = getStartMode();
-    int startEvent = getStartEvent();
+#if TARGET_PC && DUSK_ENABLE_MULTIPLAYER
+    // Dusk co-op: a puppet must NOT (re-)order the scene's start demo. This
+    // block reads the *local* player's scene-entry state (getStartMode /
+    // getStartEvent / getStartStagePoint, all globals) and tells the event
+    // manager to play the matching intro cutscene — so a puppet spawned
+    // mid-scene re-fires whatever intro the current scene had. That's the
+    // looping-cutscene bug (the puppet's create() kept re-triggering demo09).
+    if (isPuppet()) {
+        mStartEventID = 0xFF;  // 0xFF = no start demo
+    } else
+#endif
+    {
+        int startMode = getStartMode();
+        int startEvent = getStartEvent();
 
-    if (dComIfGp_getStartStagePoint() == -2 || dComIfGp_getStartStagePoint() == -3) {
-        mStartEventID = dComIfGp_evmng_startDemo(-1);
-    } else if (dComIfGp_getStartStagePoint() == -4) {
-        mStartEventID = dComIfGp_evmng_startDemo(0xD5);
-    } else {
-        if (getLastSceneMode() == 9) {
-            mStartEventID = dComIfGp_evmng_startDemo(0xD3);
-        } else if (startMode == 10) {
-            if (startEvent != 0xFF) {
-                mStartEventID = dComIfGp_evmng_startDemo(startEvent);
-            } else {
-                mStartEventID = dComIfGp_evmng_startDemo(0xCF);
-            }
-        } else if (startMode == 11) {
-            if (startEvent != 0xFF) {
-                mStartEventID = dComIfGp_evmng_startDemo(startEvent);
-            } else {
-                mStartEventID = dComIfGp_evmng_startDemo(0xD0);
-            }
-        } else if (startMode == 6) {
-            mStartEventID = dComIfGp_evmng_startDemo(0xCD);
-        } else if (startMode == 7) {
-            mStartEventID = dComIfGp_evmng_startDemo(0xCE);
-        } else if (startMode == 8) {
-            if (startEvent != 0xFF) {
-                mStartEventID = dComIfGp_evmng_startDemo(startEvent);
-            } else {
-                mStartEventID = dComIfGp_evmng_startDemo(0xD4);
-            }
-        } else if (startMode == 12) {
-            mStartEventID = dComIfGp_evmng_startDemo(0xC9);
-        } else if (getLastSceneMode() == 11) {
-            mStartEventID = dComIfGp_evmng_startDemo(0xFF);
-        } else if (getLastSceneMode() == 12) {
-            mStartEventID = dComIfGp_evmng_startDemo(0xD1);
+        if (dComIfGp_getStartStagePoint() == -2 || dComIfGp_getStartStagePoint() == -3) {
+            mStartEventID = dComIfGp_evmng_startDemo(-1);
+        } else if (dComIfGp_getStartStagePoint() == -4) {
+            mStartEventID = dComIfGp_evmng_startDemo(0xD5);
         } else {
-            mStartEventID = dComIfGp_evmng_startDemo(startEvent);
+            if (getLastSceneMode() == 9) {
+                mStartEventID = dComIfGp_evmng_startDemo(0xD3);
+            } else if (startMode == 10) {
+                if (startEvent != 0xFF) {
+                    mStartEventID = dComIfGp_evmng_startDemo(startEvent);
+                } else {
+                    mStartEventID = dComIfGp_evmng_startDemo(0xCF);
+                }
+            } else if (startMode == 11) {
+                if (startEvent != 0xFF) {
+                    mStartEventID = dComIfGp_evmng_startDemo(startEvent);
+                } else {
+                    mStartEventID = dComIfGp_evmng_startDemo(0xD0);
+                }
+            } else if (startMode == 6) {
+                mStartEventID = dComIfGp_evmng_startDemo(0xCD);
+            } else if (startMode == 7) {
+                mStartEventID = dComIfGp_evmng_startDemo(0xCE);
+            } else if (startMode == 8) {
+                if (startEvent != 0xFF) {
+                    mStartEventID = dComIfGp_evmng_startDemo(startEvent);
+                } else {
+                    mStartEventID = dComIfGp_evmng_startDemo(0xD4);
+                }
+            } else if (startMode == 12) {
+                mStartEventID = dComIfGp_evmng_startDemo(0xC9);
+            } else if (getLastSceneMode() == 11) {
+                mStartEventID = dComIfGp_evmng_startDemo(0xFF);
+            } else if (getLastSceneMode() == 12) {
+                mStartEventID = dComIfGp_evmng_startDemo(0xD1);
+            } else {
+                mStartEventID = dComIfGp_evmng_startDemo(startEvent);
+            }
         }
-    }
 
-    dComIfGp_getPEvtManager()->orderStartDemo();
+        dComIfGp_getPEvtManager()->orderStartDemo();
+    }
     field_0x2f94 = -1;
     field_0x2f95 = -1;
     field_0x2f96 = -1;
@@ -4926,7 +4939,7 @@ int daAlink_c::create() {
         // and must not claim the local player slot. The local Link still
         // registers itself normally below in the non-puppet path.
 #if DUSK_ENABLE_MULTIPLAYER
-        DuskLog.debug("ALINK create: this={} isPuppet={} getLinkPlayer={}",
+        DuskLog.debug("[coop] alink create: this={} isPuppet={} getLinkPlayer={}",
                       (const void*)this, isPuppet(), (const void*)dComIfGp_getLinkPlayer());
 #endif
         if (!isPuppet()) {

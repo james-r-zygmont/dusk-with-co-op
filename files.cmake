@@ -1532,6 +1532,7 @@ set(DUSK_HTTP_BACKEND_FILES
 
 set(DUSK_MULTIPLAYER_FILES
         include/dusk/net/api_client.h
+        include/dusk/net/coop_log.h
         include/dusk/net/net.h
         include/dusk/net/queue.h
         include/dusk/net/replication.h

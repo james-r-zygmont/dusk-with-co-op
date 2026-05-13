@@ -32,6 +32,13 @@ bool BroadcastLocalPose();
 // updates the local-scene cache used by IsColocated().
 bool EmitLocalSceneAnnounce();
 
+// Hooked from f_op_scene_req.cpp when a stage transition is requested:
+// despawns the puppet and arms the "don't re-spawn yet" window so the
+// puppet (a full daAlink_c — heavy) isn't around while the new scene loads
+// or an entrance cutscene plays. The window is shortened once the scene
+// reaches its Done phase (EmitLocalSceneAnnounce caps it).
+void OnSceneTransition();
+
 // Outbound: record the body animation the local Link just switched to.
 // Hooked from daAlink_c::setSingleAnime / setDoubleAnime (the two body-anim
 // entry points). Cheap — just stores the id; BroadcastLocalAnim() ships it.

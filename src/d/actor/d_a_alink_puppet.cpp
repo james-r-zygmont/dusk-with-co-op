@@ -39,6 +39,7 @@
 #include "d/actor/d_a_alink.h"
 
 #include "dusk/logging.h"
+#include "dusk/net/coop_log.h"
 #include "dusk/net/replication.h"
 
 #include "d/d_com_inf_game.h"
@@ -73,12 +74,12 @@ int daAlink_c::executePuppet() {
     auto animOpt = dusk::net::replication::LatestPeerAnim();
     if (logThisTick) {
         if (poseOpt) {
-            DuskLog.debug("executePuppet: this={} pose tick={} pos=({:.1f},{:.1f},{:.1f}) anm={}",
-                          (const void*)this, poseOpt->tick,
-                          poseOpt->pos[0], poseOpt->pos[1], poseOpt->pos[2],
-                          animOpt ? (int)animOpt->anim_id : -1);
+            COOP_LOG("puppet exec: this={} pose tick={} pos=({:.1f},{:.1f},{:.1f}) anm={}",
+                     (const void*)this, poseOpt->tick,
+                     poseOpt->pos[0], poseOpt->pos[1], poseOpt->pos[2],
+                     animOpt ? (int)animOpt->anim_id : -1);
         } else {
-            DuskLog.debug("executePuppet: this={} (no peer pose yet)", (const void*)this);
+            COOP_LOG("puppet exec: this={} (no peer pose yet)", (const void*)this);
         }
     }
     if (auto& pose = poseOpt) {

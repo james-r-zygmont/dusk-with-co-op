@@ -147,6 +147,13 @@ fpc_ProcID fopScnRq_Request(int i_reqType, scene_class* i_scene, s16 i_procName,
         return fpcM_ERROR_PROCESS_ID_e;
     }
 
+#if DUSK_ENABLE_MULTIPLAYER
+    // A stage transition is starting — get the co-op puppet out of the way so
+    // it isn't holding memory while the new scene (and any entrance cutscene)
+    // loads.
+    dusk::net::replication::OnSceneTransition();
+#endif
+
     if (i_fadename != 0x7FFF) {
         phase_handler = fadeFase;
         fade_req = fopScnRq_FadeRequest(i_fadename, i_peektime);

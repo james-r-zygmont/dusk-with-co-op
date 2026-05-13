@@ -1,6 +1,7 @@
 #include "dusk/net/replication.h"
 
 #include "dusk/logging.h"
+#include "dusk/net/coop_log.h"
 #include "dusk/net/net.h"
 
 #include "d/actor/d_a_player.h"
@@ -50,6 +51,28 @@ std::uint32_t g_lastSentAnimTick = 0;
 // id is used only by DespawnPuppet/PuppetExists.
 bool g_wantPuppet = false;
 fpc_ProcID g_puppetId = fpcM_ERROR_PROCESS_ID_e;
+
+// "Don't (re-)spawn the puppet yet" countdown (sim-thread frames). The puppet
+// is a full daAlink_c — heavy enough that a cutscene's demo-data parse can
+// fail with it around (it did: d_demo.cpp's "デモデータ読み込みエラー" then a
+// crash). So we keep it despawned while a stage loads, during cutscenes, and
+// for a short grace period after. OnSceneTransition arms it big (covers the
+// scene load); EmitLocalSceneAnnounce (the Done phase) caps it to the post-
+// load grace; MaybeSpawnPuppet/Tick re-arm it to the event grace whenever a
+// cutscene is running.
+// Generous on purpose: a long multi-scene cutscene (demo09 = Faron Light
+// Spirit, stages F_SP102→103→104→…) briefly reads !event_runCheck() between
+// its sub-states — a ~20s lull on F_SP104 was enough for the old 20s grace to
+// expire, the puppet to re-spawn, and the next demo's data alloc to come back
+// NULL ("デモデータ読み込みエラー", confirmed both instances). 60s covers
+// those lulls with margin (and the cutscene's frequent scene transitions keep
+// re-arming it anyway). Cost: the puppet reappears slowly after events / scene
+// loads. Crude band-aid; the real fix is a leaner puppet create() that doesn't
+// allocate the full anim-heap battery so it can coexist in a tight scene.
+constexpr int kPuppetEventGraceFrames = 60 * 30;  // ~60s after a cutscene / scene Done
+constexpr int kPuppetSceneLoadFrames = 60 * 30;   // safety cap if Done never fires
+int g_puppetSettleFrames = 0;
+bool g_eventWasRunning = false;                    // rising-edge tracking for despawn-on-event
 
 // Thresholds for the send-on-delta gate. Picked generously — the network
 // budget is trivial at our 30 Hz / 48 B per pose, and false positives just
@@ -168,7 +191,7 @@ bool BroadcastLocalPose() {
 void NoteLocalAnim(int anmId) {
     // Sim-thread only. The Tick() pump diffs against g_lastSentAnimId.
     if (anmId != g_localAnimId) {
-        DuskLog.debug("dusk::net::replication: local anim -> {}", anmId);
+        COOP_LOG("anim local -> {}", anmId);
     }
     g_localAnimId = anmId;
 }
@@ -204,13 +227,26 @@ bool EmitLocalSceneAnnounce() {
     announce.room = static_cast<std::uint8_t>(dComIfGp_roomControl_getStayNo());
     announce.spawn = 0;
 
+    // The new scene has finished loading (this is the f_op_scene_req Done
+    // phase) — shorten the "don't re-spawn the puppet yet" window from the big
+    // scene-load value down to the post-load grace. If an entrance cutscene is
+    // about to play, Tick()/MaybeSpawnPuppet will re-arm it.
+    if (g_puppetSettleFrames > kPuppetEventGraceFrames) {
+        g_puppetSettleFrames = kPuppetEventGraceFrames;
+    }
+
     // Update the local cache + recompute co-location regardless of connection
     // state — this lets IsColocated() stay sane even when offline.
+    bool colocated;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_localScene = announce;
         RecomputeColocation();
+        colocated = g_colocated;
     }
+    COOP_LOG("scene done = {}/{} (colocated={}, puppet settle {} frames)",
+             reinterpret_cast<const char*>(announce.stage.data()), announce.room,
+             colocated, g_puppetSettleFrames);
 
     if (!IsConnected() || GetStats().playerIndex == 0xFF) {
         return false;
@@ -249,7 +285,7 @@ void OnPeerAnim(const wire::PlayerAnim& anim) {
     const bool changed = !g_latestAnim || g_latestAnim->anim_id != anim.anim_id;
     g_latestAnim = anim;
     if (changed) {
-        DuskLog.debug("dusk::net::replication: peer anim -> {}", anim.anim_id);
+        COOP_LOG("anim peer -> {}", anim.anim_id);
     }
 }
 
@@ -257,9 +293,8 @@ void OnPeerSceneAnnounce(const wire::SceneAnnounce& announce) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_peerScene = announce;
     RecomputeColocation();
-    DuskLog.debug("dusk::net::replication: peer scene = {}/{} (colocated={})",
-                  reinterpret_cast<const char*>(announce.stage.data()),
-                  announce.room, g_colocated);
+    COOP_LOG("scene peer = {}/{} (colocated={})",
+             reinterpret_cast<const char*>(announce.stage.data()), announce.room, g_colocated);
 }
 
 std::optional<wire::PlayerPose> LatestPeerPose() {
@@ -288,9 +323,22 @@ void RequestPuppetSpawn() {
     g_wantPuppet = true;
 }
 
+void OnSceneTransition() {
+    // A stage change is starting. The puppet (an old-scene actor) gets deleted
+    // by the scene teardown — the *safe* place to delete it (the real Link is
+    // going away too), so we don't fopAcM_delete it here (mid-scene deletes
+    // have crashed the host). We just block it from *re-spawning* until the new
+    // scene has loaded and settled — a stray daAlink_c around during a
+    // cutscene's demo-data parse has derailed cutscenes. EmitLocalSceneAnnounce
+    // (Done) trims this back to the post-load grace.
+    g_puppetSettleFrames = kPuppetSceneLoadFrames;
+    COOP_LOG("scene transition (going to {}) — puppet held {} frames",
+             dComIfGp_getStartStageName(), kPuppetSceneLoadFrames);
+}
+
 void RegisterPuppetId(fpc_ProcID id) {
     g_puppetId = id;
-    DuskLog.debug("dusk::net::replication: puppet id registered = {}", id);
+    COOP_LOG("puppet id registered = {}", id);
 }
 
 bool PuppetExists() {
@@ -308,7 +356,7 @@ bool PuppetExists() {
 void DespawnPuppet() {
     g_wantPuppet = false;
     if (g_puppetId != fpcM_ERROR_PROCESS_ID_e) {
-        DuskLog.debug("dusk::net::replication: despawning puppet id={}", g_puppetId);
+        COOP_LOG("puppet despawn id={}", g_puppetId);
         if (auto* puppet = fopAcM_SearchByID(g_puppetId)) {
             fopAcM_delete(puppet);
         }
@@ -325,6 +373,10 @@ void MaybeSpawnPuppet() {
     // that when the puppet dies with a scene transition we re-spawn it in the
     // new scene next time Link is ready.
     if (PuppetExists()) return;
+    // Don't re-spawn while a scene is loading, a cutscene is running, or during
+    // the grace period after either — see g_puppetSettleFrames (managed in
+    // Tick() / OnSceneTransition() / EmitLocalSceneAnnounce()).
+    if (g_puppetSettleFrames > 0) return;
     // We need the local player loaded to spawn next to them; if Link isn't
     // ready yet (still loading the scene), defer to the next tick.
     daPy_py_c* link = dComIfGp_getLinkPlayer();
@@ -341,7 +393,7 @@ void MaybeSpawnPuppet() {
         fpcNm_ALINK_e, parameters, &pos, fopAcM_GetRoomNo(link),
         &angle, /*scale=*/nullptr, /*argument=*/-1);
     if (id == fpcM_ERROR_PROCESS_ID_e) {
-        DuskLog.warn("dusk::net::replication: puppet spawn failed; will retry");
+        DuskLog.warn("[coop] puppet spawn failed (fopAcM_create); will retry");
         return;
     }
     // Fallback: daAlink_Create() also calls RegisterPuppetId with the actor's
@@ -350,7 +402,8 @@ void MaybeSpawnPuppet() {
     if (g_puppetId == fpcM_ERROR_PROCESS_ID_e) {
         g_puppetId = id;
     }
-    DuskLog.debug("dusk::net::replication: puppet spawn requested id={}", id);
+    COOP_LOG("puppet spawn requested id={} at ({:.0f},{:.0f},{:.0f})",
+             id, pos.x, pos.y, pos.z);
 }
 
 }  // namespace
@@ -391,6 +444,24 @@ void Tick() {
     // puppet) — keeps a stale g_puppetId from ever colliding with a recycled
     // ProcID and making isPuppet() misfire on a real Link.
     (void)PuppetExists();
+
+    // While an event/cutscene is running, hold the puppet OFF (re-arm the
+    // grace) — but do NOT actively despawn it here. Deleting the puppet
+    // mid-scene (while the real Link survives) crashes the host: an NPC talk
+    // event triggered DespawnPuppet() and the client died a couple frames
+    // later. The puppet only gets deleted safely at scene teardown (the real
+    // Link is going away too) or on Disconnect; so we just stop it from
+    // *re-spawning* during/right-after an event and let it ride.
+    const bool eventRunning = dComIfGp_event_runCheck();
+    if (eventRunning) {
+        if (!g_eventWasRunning) COOP_LOG("event started — puppet held {} frames",
+                                         kPuppetEventGraceFrames);
+        g_puppetSettleFrames = kPuppetEventGraceFrames;
+    } else {
+        if (g_eventWasRunning) COOP_LOG("event ended");
+        if (g_puppetSettleFrames > 0) --g_puppetSettleFrames;
+    }
+    g_eventWasRunning = eventRunning;
 
     MaybeSpawnPuppet();
 

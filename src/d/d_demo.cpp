@@ -1049,6 +1049,16 @@ jmessage_tControl::~jmessage_tControl() {}
 int dDemo_c::start(u8 const* p_data, cXyz* p_translation, f32 rotationY) {
     JUT_ASSERT(1886, m_system != NULL);
 
+#if TARGET_PC
+    // Dusk co-op diagnostic: a parse failure below ("デモデータ読み込みエラー")
+    // is one of the symptoms of the cutscene-loop bug — log the inputs so we
+    // can tell a bad p_data (freed / wrong resource / null) from malformed
+    // JStudio data, and whether each (re-)entry parsed OK.
+    DuskLog.debug("dDemo_c::start: p_data={} ({}) m_system={} m_control={}",
+                  (const void*)p_data,
+                  p_data == NULL ? "NULL!" : "ok", (const void*)m_system, (const void*)m_control);
+#endif
+
     m_control->reset();
     JStudio::TParse parser(m_control);
 
@@ -1057,6 +1067,9 @@ int dDemo_c::start(u8 const* p_data, cXyz* p_translation, f32 rotationY) {
         OSReport_Error("デモデータ読み込みエラー！！\n");
         return 0;
     }
+#if TARGET_PC
+    DuskLog.debug("dDemo_c::start: parse OK");
+#endif
 
     if (m_data == NULL) {
         m_control->setSuspend(0);

@@ -24,6 +24,13 @@
 // sessions on startup, so "most recent" is the live one. Set to 0 to disable.
 #define DUSK_DEV_AUTOCONNECT_COOP 1
 
+// DEV HACK: when set, host/join automatically push/pull the canonical save
+// (M4 chunk 1). Defaulted OFF because auto-syncing two *mismatched* saves
+// regresses quest state and re-triggers cutscenes (the guest adopts the
+// host's earlier progress). Set to 1 to test save sync — with matching
+// saves! — or use the Co-op Debug HUD's Push/Pull buttons.
+#define DUSK_DEV_AUTOSYNC_SAVE 0
+
 namespace dusk::net {
 
 namespace {
@@ -243,7 +250,7 @@ bool HostSession(const HostSessionConfig& cfg) {
     SetString(g_baseUrl, cfg.base_url);
     SetString(g_authToken, resp.host_token);
     g_canonicalSaveVersion.store(0, std::memory_order_relaxed);
-    g_wantPushSave.store(true, std::memory_order_relaxed);   // upload our save once connected
+    g_wantPushSave.store(DUSK_DEV_AUTOSYNC_SAVE != 0, std::memory_order_relaxed);
     g_wantPullSave.store(false, std::memory_order_relaxed);
 
     // Build the Hello we'll emit once the WS reaches Connected.
@@ -287,7 +294,7 @@ bool JoinSession(const JoinSessionConfig& cfg) {
     SetString(g_authToken, resp.guest_token);
     g_canonicalSaveVersion.store(0, std::memory_order_relaxed);
     g_wantPushSave.store(false, std::memory_order_relaxed);
-    g_wantPullSave.store(true, std::memory_order_relaxed);   // adopt the host's canonical save
+    g_wantPullSave.store(DUSK_DEV_AUTOSYNC_SAVE != 0, std::memory_order_relaxed);
 
     wire::Hello hello;
     hello.protocol_version = wire::kProtocolVersion;
