@@ -43,6 +43,7 @@
 #include "dusk/net/replication.h"
 
 #include "d/d_com_inf_game.h"
+#include "d/d_kankyo.h"
 #include "f_op/f_op_actor_mng.h"
 #include "m_Do/m_Do_mtx.h"
 
@@ -190,6 +191,38 @@ int daAlink_c::executePuppet() {
 
     // Match the return convention of daAlink_Execute (non-zero = OK; 0
     // would cause the actor framework to delete us).
+    return 1;
+}
+
+int daAlink_c::drawPuppet() {
+    // Hide the puppet only when we *positively* know the peer is in a different
+    // stage/room — not merely when co-location is unconfirmed (e.g. the peer's
+    // first pose hasn't arrived yet). Otherwise a freshly spawned puppet would
+    // be invisible until the scene caches converge. executePuppet() keeps
+    // running every tick so the puppet pops back in the moment they reunite.
+    if (dusk::net::replication::IsPeerInDifferentScene()) {
+        return 1;
+    }
+
+    // Set up the actor's tev struct from the environment light the same way
+    // daAlink_c::draw() does for the human form, then draw the four pieces
+    // executePuppet() keeps posed: body, hand, hat, face. Everything else the
+    // real draw() touches (sword/shield/held-item/wolf/clothes-change/particles/
+    // shadow/sight) doesn't apply to a pure-visual puppet.
+    g_env_light.settingTevStruct(10, &current.pos, &tevStr);
+    initTevCustomColor();
+
+    modelDraw(mpLinkModel, 0);
+    if (mpLinkHandModel != NULL) {
+        modelDraw(mpLinkHandModel, 0);
+    }
+    if (mpLinkHatModel != NULL) {
+        modelDraw(mpLinkHatModel, 0);
+    }
+    if (mpLinkFaceModel != NULL) {
+        modelDraw(mpLinkFaceModel, 0);
+    }
+
     return 1;
 }
 

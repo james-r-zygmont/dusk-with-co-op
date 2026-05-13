@@ -1809,11 +1809,12 @@ public:
     // Dusk multiplayer: a puppet daAlink_c is registered by its ProcID in
     // dusk::net::replication. isPuppet() short-circuits controller-driven
     // logic in create() and execute(); executePuppet() is the puppet's
-    // minimal per-frame update. Both are implemented in d_a_alink_puppet.cpp
-    // — keeping the body out of this header avoids pulling
-    // dusk/net/replication.h into the rest of the decomp.
+    // minimal per-frame update and drawPuppet() its minimal draw. They're
+    // implemented in d_a_alink_puppet.cpp — keeping the body out of this
+    // header avoids pulling dusk/net/replication.h into the rest of the decomp.
     bool isPuppet() const;
     int executePuppet();
+    int drawPuppet();
 #endif
     void setDrawHand();
     bool checkSwordDraw();

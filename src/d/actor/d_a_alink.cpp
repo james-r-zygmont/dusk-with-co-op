@@ -4184,7 +4184,19 @@ int daAlink_c::createHeap() {
     ResTIMG* warpTex = (ResTIMG*)dComIfG_getObjectRes("Always", dRes_ID_ALWAYS_BTI_WARP_TEX_e);
     mpWarpTexData = (void*)((uintptr_t)warpTex + warpTex->imageOffset);
 
+#if TARGET_PC && DUSK_ENABLE_MULTIPLAYER
+    // Dusk co-op: a puppet never plays a demo (create() sets mStartEventID =
+    // 0xFF for puppets), so it doesn't need the demo00_Link_cut00_* models.
+    // Skipping them is the main reason the puppet can coexist with a
+    // memory-heavy cutscene's demo-data alloc — those models are loaded into
+    // the actor's solid heap and are substantial in cutscene-arc scenes.
+    // executePuppet()/drawPuppet() never touch mpDemo*; allAnimePlay()'s
+    // mpDemoHLTmpBck/mpDemoHRTmpBck refs are NULL-guarded and only fire in the
+    // demo-hand state (0xFB) which replicated anim ids never select.
+    if (!isPuppet() && *dStage_roomControl_c::getDemoArcName() != 0) {
+#else
     if (*dStage_roomControl_c::getDemoArcName() != 0) {
+#endif
         if (!initDemoModel(&mpDemoHLTmpModel, "demo00_Link_cut00_HL_tmp.bmd", 0x1000000)) {
             return 0;
         }
@@ -19512,14 +19524,12 @@ void daAlink_c::initTevCustomColor() {
 
 int daAlink_c::draw() {
 #if TARGET_PC && DUSK_ENABLE_MULTIPLAYER
-    // Dusk multiplayer: hide the puppet only when we *positively* know the peer
-    // is in a different stage/room — not merely when co-location is unconfirmed
-    // (e.g. the peer's first pose hasn't arrived yet). Otherwise a freshly
-    // spawned puppet would be invisible until the scene caches converge.
-    // executePuppet() keeps running every tick, so the puppet pops back in at
-    // the right spot the moment the players reunite.
-    if (isPuppet() && dusk::net::replication::IsPeerInDifferentScene()) {
-        return 1;
+    // Dusk multiplayer: a puppet renders only its body/face/hat/hand from
+    // replicated state — none of the sword/shield/particle/sight/wolf/clothes
+    // machinery below applies. drawPuppet() also owns the "hide when the peer
+    // is in another scene" gate.
+    if (isPuppet()) {
+        return drawPuppet();
     }
 #endif
     if (checkWolf()) {
