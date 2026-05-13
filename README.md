@@ -8,6 +8,17 @@
   </p>
 </div>
 
+# ⚠️ Unofficial experimental fork
+
+> [!WARNING]
+> **This is an unofficial, personal fork — it is not supported by, affiliated with, or endorsed by the upstream Dusk project ([TwilitRealm/dusk](https://github.com/TwilitRealm/dusk)).**
+>
+> This fork exists strictly for my own experimentation and learning about implementing multiplayer server / co-op functionality in an interesting setting. It is a hobby playground with a ton of hard crashes and bugs. Expect breakage, throwaway debug code, and half-finished features. **Do not** report issues from this fork to the upstream project, and do not assume anything here reflects upstream's plans or quality.
+>
+> Overall, this is a pretty janky hack, and I don't intend on testing the game all the way through between two clients in co-op. I **am** interested in the potential API that's been mentioned to see if that makes interacting with the underlying software easier.
+> 
+> If you want the real thing, go to the [upstream repository](https://github.com/TwilitRealm/dusk).
+
 # Overview
 
 Dusk is a reverse-engineered reimplementation of Twilight Princess.
