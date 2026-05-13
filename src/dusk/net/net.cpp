@@ -2,6 +2,7 @@
 
 #include "dusk/logging.h"
 #include "dusk/net/api_client.h"
+#include "dusk/net/replication.h"
 #include "dusk/net/save_codec.h"
 #include "dusk/net/transport.h"
 #include "dusk/net/wire.h"
@@ -191,6 +192,7 @@ void Disconnect() {
     g_hasPendingHello = false;
     ResetHandshakeState();
     SetString(g_sessionCode, {});
+    replication::DespawnPuppet();
 }
 
 void Tick() {
@@ -251,12 +253,20 @@ void Tick() {
                                            std::memory_order_relaxed);
                     SetString(g_lastErrorMessage, "session full");
                     if (g_transport) g_transport->disconnect();
+                } else if constexpr (std::is_same_v<T, wire::PlayerPose>) {
+                    replication::OnPeerPose(f);
+                } else if constexpr (std::is_same_v<T, wire::PlayerAnim>) {
+                    replication::OnPeerAnim(f);
+                } else if constexpr (std::is_same_v<T, wire::SceneAnnounce>) {
+                    replication::OnPeerSceneAnnounce(f);
                 }
                 // Other variants (Hello / ErrorSaveCommitConflict) aren't
                 // expected on the client side in M2.
             },
             *decoded);
     }
+
+    replication::Tick();
 }
 
 bool Send(std::span<const std::uint8_t> frame) {

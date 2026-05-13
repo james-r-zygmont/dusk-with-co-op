@@ -1805,6 +1805,14 @@ public:
     int procGoronRideWaitInit(fopAc_ac_c* i_goronActor);
     int procGoronRideWait();
     int execute();
+#if TARGET_PC
+    // Dusk multiplayer: high bit of fopAcM_GetParam flags a network-driven
+    // puppet (see include/dusk/net/replication.h). isPuppet() short-circuits
+    // controller-driven logic in create() and execute(); executePuppet() is
+    // the puppet's minimal per-frame update, implemented in d_a_alink_puppet.cpp.
+    bool isPuppet() const { return (fopAcM_GetParam(this) & 0x80000000u) != 0u; }
+    int executePuppet();
+#endif
     void setDrawHand();
     bool checkSwordDraw();
     bool checkShieldDraw();

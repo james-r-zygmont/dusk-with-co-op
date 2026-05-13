@@ -4917,8 +4917,18 @@ int daAlink_c::create() {
             dComIfGs_setSelectEquipClothes(dItemNo_WEAR_KOKIRI_e);
         }
 
+#if TARGET_PC
+        // Dusk multiplayer: a puppet daAlink_c mirrors a peer's transforms
+        // and must not claim the local player slot. The local Link still
+        // registers itself normally below in the non-puppet path.
+        if (!isPuppet()) {
+            dComIfGp_setPlayer(0, this);
+            dComIfGp_setLinkPlayer(this);
+        }
+#else
         dComIfGp_setPlayer(0, this);
         dComIfGp_setLinkPlayer(this);
+#endif
         fopAcM_setStageLayer(&LEAFDRAW_BASE(this));
 
         if (sceneMode == 7) {
@@ -5097,7 +5107,17 @@ int daAlink_c::create() {
     l_jumpTop = 0.0f;
     #endif
 
+#if TARGET_PC
+    // Dusk multiplayer: only the local Link spawns its Midna companion; the
+    // puppet would otherwise create a duplicate Midna actor in the host's
+    // scene. The peer's Midna remains visible to the host since both share
+    // the same scene's actor pool.
+    if (!isPuppet()) {
+        fopAcM_create(fpcNm_MIDNA_e, midna_prm, &current.pos, fopAcM_GetRoomNo(this), &shape_angle, NULL, -1);
+    }
+#else
     fopAcM_create(fpcNm_MIDNA_e, midna_prm, &current.pos, fopAcM_GetRoomNo(this), &shape_angle, NULL, -1);
+#endif
     checkSetNpcTks(&current.pos, fopAcM_GetRoomNo(this), 1);
 
     if (startPoint == -4 && dComIfGp_TargetWarpPt_get() != 0xFF && !dComIfGp_TransportWarp_check()) {
@@ -17738,6 +17758,13 @@ int daAlink_c::procGoronRideWait() {
 }
 
 int daAlink_c::execute() {
+#if TARGET_PC
+    // Dusk multiplayer: puppets are driven by replicated pose/anim, not by
+    // controller input. Short-circuit the entire input-driven update path.
+    if (isPuppet()) {
+        return executePuppet();
+    }
+#endif
     loadModelDVD();
 
     if (checkEndResetFlg0(ERFLG0_BOSS_ROOM_WAIT) && getMidnaActor() != NULL) {
@@ -19827,8 +19854,18 @@ daAlink_c::~daAlink_c() {
 
     dKy_plight_cut(&mMagneBootsPlight);
 
+#if TARGET_PC
+    // Dusk multiplayer: a puppet doesn't own the local player slot, so its
+    // destructor must not clear it. The local Link's destructor still runs
+    // these calls in the non-puppet branch.
+    if (!isPuppet()) {
+        dComIfGp_setPlayer(0, NULL);
+        dComIfGp_setLinkPlayer(NULL);
+    }
+#else
     dComIfGp_setPlayer(0, NULL);
     dComIfGp_setLinkPlayer(NULL);
+#endif
 }
 
 static int daAlink_Delete(daAlink_c* i_this) {

@@ -24,6 +24,15 @@ use thiserror::Error;
 
 pub const ISO_HASH_LEN: usize = 16;
 pub const SESSION_CODE_LEN: usize = 6;
+pub const STAGE_NAME_LEN: usize = 8;
+
+/// `mTransformStatus` from `dSv_player_status_a_c` (see plan §C — per-player
+/// overlay). The on-the-wire representation matches the in-memory enum.
+pub const TRANSFORM_HUMAN: u8 = 0;
+pub const TRANSFORM_WOLF: u8 = 1;
+
+/// Sentinel for "no item currently held" in `PlayerAnim.held_item`.
+pub const HELD_ITEM_NONE: u8 = 0xFF;
 
 /// Intent flag for `Hello` packets.
 #[repr(u8)]
@@ -58,9 +67,15 @@ pub enum Tag {
     ErrorSessionNotFound = 5,
     ErrorSessionFull = 6,
     ErrorSaveCommitConflict = 7,
-    // Reserved for M3+: PlayerPose=16, PlayerAnim=17, SceneAnnounce=18,
-    // FlagSet=32, KeyItemPickup=33, ConsumableChange=34, SaveSnapshot=48,
-    // SaveCommit=49, SaveCommitAck=50, SaveCommitConflict=51, Keepalive=64.
+
+    // M3 replication packets — peer ↔ peer via server.
+    PlayerPose = 16,
+    PlayerAnim = 17,
+    SceneAnnounce = 18,
+
+    // Reserved for later: FlagSet=32, KeyItemPickup=33, ConsumableChange=34,
+    // SaveSnapshot=48, SaveCommit=49, SaveCommitAck=50,
+    // SaveCommitConflict=51, Keepalive=64.
 }
 
 impl Tag {
@@ -73,6 +88,9 @@ impl Tag {
             5 => Ok(Self::ErrorSessionNotFound),
             6 => Ok(Self::ErrorSessionFull),
             7 => Ok(Self::ErrorSaveCommitConflict),
+            16 => Ok(Self::PlayerPose),
+            17 => Ok(Self::PlayerAnim),
+            18 => Ok(Self::SceneAnnounce),
             _ => Err(FrameError::UnknownTag(b)),
         }
     }
@@ -94,10 +112,48 @@ pub struct HelloAck {
     pub server_time_ms: u64,
 }
 
+/// One pose snapshot from a peer's `daAlink_c`. Position, rotation, velocity,
+/// and a monotonic per-sender tick so the receiver can drop reorderings.
+/// Sent at ~20 Hz with send-on-delta gating on the sender. Source fields on
+/// `fopAc_ac_c`: `current.pos @ 0x4D0`, `shape_angle @ 0x4E4`,
+/// `speed @ 0x4F8`, `speedF @ 0x52C`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerPose {
+    pub tick: u32,
+    pub stage: [u8; STAGE_NAME_LEN],
+    pub room: u8,
+    pub pos: [f32; 3],
+    pub shape_angle: [i16; 3],
+    pub speed: [f32; 3],
+    pub speed_f: f32,
+}
+
+/// Animation snapshot. Sent on change; the receiver drives the puppet's
+/// animation procedure from `anim_id` and steps `frame` itself between
+/// updates so a dropped packet doesn't freeze the puppet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerAnim {
+    pub anim_id: u16,
+    pub frame: f32,
+    pub transform: u8,   // 0 = human, 1 = wolf
+    pub held_item: u8,   // 0xFF = nothing held
+}
+
+/// Sent when a client's scene-request reaches the `Done` phase
+/// (`f_op_scene_req.cpp`). The server caches the latest announce per slot
+/// and flips co-location on when host's `stage`+`room` match the guest's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneAnnounce {
+    pub stage: [u8; STAGE_NAME_LEN],
+    pub room: u8,
+    pub spawn: u8,
+}
+
 /// All packet variants we currently understand. Decode produces one of
 /// these; encode round-trips back to the same bytes (modulo `display_name`
-/// length, which is varying).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// length, which is varying). `PartialEq` not `Eq` because the M3 pose /
+/// anim variants carry `f32` fields.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Frame {
     Hello(Hello),
     HelloAck(HelloAck),
@@ -106,6 +162,9 @@ pub enum Frame {
     ErrorSessionNotFound,
     ErrorSessionFull,
     ErrorSaveCommitConflict,
+    PlayerPose(PlayerPose),
+    PlayerAnim(PlayerAnim),
+    SceneAnnounce(SceneAnnounce),
 }
 
 #[derive(Debug, Error)]
@@ -163,6 +222,29 @@ impl Frame {
             Frame::ErrorSaveCommitConflict => {
                 w.write_u8(Tag::ErrorSaveCommitConflict as u8)?;
             }
+            Frame::PlayerPose(p) => {
+                w.write_u8(Tag::PlayerPose as u8)?;
+                w.write_u32::<BigEndian>(p.tick)?;
+                w.write_all(&p.stage)?;
+                w.write_u8(p.room)?;
+                for v in &p.pos { w.write_f32::<BigEndian>(*v)?; }
+                for v in &p.shape_angle { w.write_i16::<BigEndian>(*v)?; }
+                for v in &p.speed { w.write_f32::<BigEndian>(*v)?; }
+                w.write_f32::<BigEndian>(p.speed_f)?;
+            }
+            Frame::PlayerAnim(p) => {
+                w.write_u8(Tag::PlayerAnim as u8)?;
+                w.write_u16::<BigEndian>(p.anim_id)?;
+                w.write_f32::<BigEndian>(p.frame)?;
+                w.write_u8(p.transform)?;
+                w.write_u8(p.held_item)?;
+            }
+            Frame::SceneAnnounce(p) => {
+                w.write_u8(Tag::SceneAnnounce as u8)?;
+                w.write_all(&p.stage)?;
+                w.write_u8(p.room)?;
+                w.write_u8(p.spawn)?;
+            }
         }
         Ok(())
     }
@@ -209,6 +291,60 @@ impl Frame {
             Tag::ErrorSessionNotFound => Frame::ErrorSessionNotFound,
             Tag::ErrorSessionFull => Frame::ErrorSessionFull,
             Tag::ErrorSaveCommitConflict => Frame::ErrorSaveCommitConflict,
+            Tag::PlayerPose => {
+                let tick = cur.read_u32::<BigEndian>()?;
+                let mut stage = [0u8; STAGE_NAME_LEN];
+                cur.read_exact(&mut stage)?;
+                let room = cur.read_u8()?;
+                let pos = [
+                    cur.read_f32::<BigEndian>()?,
+                    cur.read_f32::<BigEndian>()?,
+                    cur.read_f32::<BigEndian>()?,
+                ];
+                let shape_angle = [
+                    cur.read_i16::<BigEndian>()?,
+                    cur.read_i16::<BigEndian>()?,
+                    cur.read_i16::<BigEndian>()?,
+                ];
+                let speed = [
+                    cur.read_f32::<BigEndian>()?,
+                    cur.read_f32::<BigEndian>()?,
+                    cur.read_f32::<BigEndian>()?,
+                ];
+                let speed_f = cur.read_f32::<BigEndian>()?;
+                Frame::PlayerPose(PlayerPose {
+                    tick,
+                    stage,
+                    room,
+                    pos,
+                    shape_angle,
+                    speed,
+                    speed_f,
+                })
+            }
+            Tag::PlayerAnim => {
+                let anim_id = cur.read_u16::<BigEndian>()?;
+                let frame = cur.read_f32::<BigEndian>()?;
+                let transform = cur.read_u8()?;
+                let held_item = cur.read_u8()?;
+                Frame::PlayerAnim(PlayerAnim {
+                    anim_id,
+                    frame,
+                    transform,
+                    held_item,
+                })
+            }
+            Tag::SceneAnnounce => {
+                let mut stage = [0u8; STAGE_NAME_LEN];
+                cur.read_exact(&mut stage)?;
+                let room = cur.read_u8()?;
+                let spawn = cur.read_u8()?;
+                Frame::SceneAnnounce(SceneAnnounce {
+                    stage,
+                    room,
+                    spawn,
+                })
+            }
         };
 
         if cur.position() as usize != bytes.len() {
@@ -332,5 +468,63 @@ mod tests {
         assert_eq!(bytes[25], HelloIntent::Host as u8);
         assert_eq!(&bytes[26..28], &[0x00, 0x01]); // name length 1 BE
         assert_eq!(bytes[28], b'x');
+    }
+
+    #[test]
+    fn player_pose_roundtrip() {
+        roundtrip(Frame::PlayerPose(PlayerPose {
+            tick: 12345,
+            stage: *b"F_SP103\0",
+            room: 7,
+            pos: [1.0, -2.5, 3.75],
+            shape_angle: [0, 0x4000, -0x1234],
+            speed: [0.1, 0.0, -0.25],
+            speed_f: 4.5,
+        }));
+    }
+
+    #[test]
+    fn player_anim_roundtrip() {
+        roundtrip(Frame::PlayerAnim(PlayerAnim {
+            anim_id: 0x0042,
+            frame: 17.5,
+            transform: TRANSFORM_HUMAN,
+            held_item: HELD_ITEM_NONE,
+        }));
+    }
+
+    #[test]
+    fn scene_announce_roundtrip() {
+        roundtrip(Frame::SceneAnnounce(SceneAnnounce {
+            stage: *b"F_SP103\0",
+            room: 2,
+            spawn: 1,
+        }));
+    }
+
+    /// Byte-pinned PlayerPose fixture. C++ port's `wire::RunSelfTest` matches
+    /// these bytes exactly.
+    #[test]
+    fn player_pose_byte_pinned() {
+        let frame = Frame::PlayerPose(PlayerPose {
+            tick: 1,
+            stage: *b"F_SP103\0",
+            room: 0,
+            pos: [0.0, 0.0, 0.0],
+            shape_angle: [0, 0, 0],
+            speed: [0.0, 0.0, 0.0],
+            speed_f: 0.0,
+        });
+        let bytes = frame.encode();
+        // 1 tag + 4 tick + 8 stage + 1 room + 12 pos + 6 angle + 12 speed + 4 speed_f
+        assert_eq!(bytes.len(), 48);
+        assert_eq!(bytes[0], Tag::PlayerPose as u8);
+        assert_eq!(&bytes[1..5], &[0x00, 0x00, 0x00, 0x01]); // tick = 1 BE
+        assert_eq!(&bytes[5..13], b"F_SP103\0");
+        assert_eq!(bytes[13], 0);                            // room
+        assert_eq!(&bytes[14..26], &[0u8; 12]);              // pos[3] = 0.0
+        assert_eq!(&bytes[26..32], &[0u8; 6]);               // shape_angle[3] = 0
+        assert_eq!(&bytes[32..44], &[0u8; 12]);              // speed[3] = 0.0
+        assert_eq!(&bytes[44..48], &[0u8; 4]);               // speed_f = 0.0
     }
 }

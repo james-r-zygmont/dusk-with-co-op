@@ -12,6 +12,9 @@
 #include "f_op/f_op_scene_pause.h"
 #include "f_pc/f_pc_executor.h"
 #include "f_pc/f_pc_manager.h"
+#if DUSK_ENABLE_MULTIPLAYER
+#include "dusk/net/replication.h"
+#endif
 
 static cPhs_Step fopScnRq_phase_ClearOverlap(scene_request_class* i_sceneReq) {
     return fopOvlpM_ClearOfReq() == 1 ? cPhs_NEXT_e : cPhs_INIT_e;
@@ -41,7 +44,7 @@ static cPhs_Step fopScnRq_phase_IsDoneOverlap(scene_request_class* i_sceneReq) {
 static BOOL l_fopScnRq_IsUsingOfOverlap;
 
 static cPhs_Step fopScnRq_phase_Done(scene_request_class* i_sceneReq) {
-    
+
     if (i_sceneReq->create_request.parameters != 1) {
         scene_class* scene = (scene_class*)fpcM_SearchByID(i_sceneReq->create_request.creating_id);
         (void)scene;
@@ -49,6 +52,13 @@ static cPhs_Step fopScnRq_phase_Done(scene_request_class* i_sceneReq) {
     }
 
     l_fopScnRq_IsUsingOfOverlap = FALSE;
+
+#if DUSK_ENABLE_MULTIPLAYER
+    // The new scene's stage name + current room are now authoritative on the
+    // game-state side; tell the peer so co-location can resolve.
+    dusk::net::replication::EmitLocalSceneAnnounce();
+#endif
+
     return cPhs_NEXT_e;
 }
 

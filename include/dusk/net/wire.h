@@ -18,6 +18,13 @@ namespace dusk::net::wire {
 inline constexpr std::uint16_t kProtocolVersion = 1;
 inline constexpr std::size_t kIsoHashLen = 16;
 inline constexpr std::size_t kSessionCodeLen = 6;
+inline constexpr std::size_t kStageNameLen = 8;
+
+// `mTransformStatus` in `dSv_player_status_a_c`; per-player overlay.
+inline constexpr std::uint8_t kTransformHuman = 0;
+inline constexpr std::uint8_t kTransformWolf = 1;
+
+inline constexpr std::uint8_t kHeldItemNone = 0xFF;
 
 enum class HelloIntent : std::uint8_t {
     Host = 0,
@@ -32,6 +39,11 @@ enum class Tag : std::uint8_t {
     ErrorSessionNotFound = 5,
     ErrorSessionFull = 6,
     ErrorSaveCommitConflict = 7,
+
+    // M3 replication packets — peer ↔ peer via the relay.
+    PlayerPose = 16,
+    PlayerAnim = 17,
+    SceneAnnounce = 18,
 };
 
 struct Hello {
@@ -60,6 +72,36 @@ struct ErrorSessionNotFound {};
 struct ErrorSessionFull {};
 struct ErrorSaveCommitConflict {};
 
+// One pose snapshot from a peer's daAlink_c. Source fields on fopAc_ac_c:
+// current.pos @ 0x4D0, shape_angle @ 0x4E4, speed @ 0x4F8, speedF @ 0x52C.
+struct PlayerPose {
+    std::uint32_t tick = 0;
+    std::array<std::uint8_t, kStageNameLen> stage{};
+    std::uint8_t room = 0;
+    float pos[3] = {0.f, 0.f, 0.f};
+    std::int16_t shape_angle[3] = {0, 0, 0};
+    float speed[3] = {0.f, 0.f, 0.f};
+    float speed_f = 0.f;
+};
+
+// Animation snapshot. Sent on change; the receiver advances `frame` itself
+// between updates so a dropped packet doesn't freeze the puppet.
+struct PlayerAnim {
+    std::uint16_t anim_id = 0;
+    float frame = 0.f;
+    std::uint8_t transform = kTransformHuman;
+    std::uint8_t held_item = kHeldItemNone;
+};
+
+// Emitted when our scene-request reaches the Done phase; the relay caches
+// the latest per slot and flips co-location on when host's stage+room match
+// guest's.
+struct SceneAnnounce {
+    std::array<std::uint8_t, kStageNameLen> stage{};
+    std::uint8_t room = 0;
+    std::uint8_t spawn = 0;
+};
+
 using Frame = std::variant<
     Hello,
     HelloAck,
@@ -67,7 +109,10 @@ using Frame = std::variant<
     ErrorProtocolVersion,
     ErrorSessionNotFound,
     ErrorSessionFull,
-    ErrorSaveCommitConflict>;
+    ErrorSaveCommitConflict,
+    PlayerPose,
+    PlayerAnim,
+    SceneAnnounce>;
 
 std::vector<std::uint8_t> Encode(const Frame& frame);
 

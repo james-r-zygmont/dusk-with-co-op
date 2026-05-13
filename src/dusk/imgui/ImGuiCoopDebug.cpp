@@ -9,6 +9,7 @@
 #include "ImGuiMenuTools.hpp"
 
 #include "dusk/net/net.h"
+#include "dusk/net/replication.h"
 
 #include <array>
 #include <cstring>
@@ -161,6 +162,23 @@ void ImGuiMenuTools::ShowCoopDebug() {
         ImGui::BeginDisabled(disconnected);
         if (ImGui::Button("Disconnect")) {
             net::Disconnect();
+        }
+        ImGui::EndDisabled();
+
+        // Puppet controls — visible regardless of connection state so we can
+        // spawn / despawn even offline while iterating.
+        const bool puppet_exists = net::replication::PuppetExists();
+        ImGuiStringViewText(fmt::format(FMT_STRING("Puppet:       {}\n"),
+            puppet_exists ? "spawned" : "(none)"));
+        ImGui::BeginDisabled(puppet_exists);
+        if (ImGui::Button("Spawn puppet")) {
+            net::replication::RequestPuppetSpawn();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!puppet_exists);
+        if (ImGui::Button("Despawn puppet")) {
+            net::replication::DespawnPuppet();
         }
         ImGui::EndDisabled();
 
