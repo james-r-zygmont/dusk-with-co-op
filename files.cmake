@@ -1531,10 +1531,16 @@ set(DUSK_HTTP_BACKEND_FILES
 )
 
 set(DUSK_MULTIPLAYER_FILES
+        include/dusk/net/api_client.h
         include/dusk/net/net.h
         include/dusk/net/queue.h
+        include/dusk/net/save_codec.h
         include/dusk/net/transport.h
+        include/dusk/net/wire.h
+        src/dusk/net/api_client.cpp
         src/dusk/net/net.cpp
+        src/dusk/net/save_codec.cpp
         src/dusk/net/transport.cpp
+        src/dusk/net/wire.cpp
         src/dusk/imgui/ImGuiCoopDebug.cpp
 )

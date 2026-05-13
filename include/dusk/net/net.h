@@ -1,6 +1,7 @@
 #ifndef DUSK_NET_NET_H
 #define DUSK_NET_NET_H
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -8,31 +9,40 @@
 
 namespace dusk::net {
 
-// Initialise the multiplayer subsystem. Safe to call once at startup; returns
-// false if a fatal initialisation error occurred (the game should keep running
-// in single-player mode in that case).
+// Lifecycle (called from the existing m_Do_main.cpp init/tick/shutdown sites):
 bool Init();
-
-// Tear the subsystem down. Safe to call once at shutdown.
 void Shutdown();
-
-// Drain inbound packet effects onto the sim thread. Must be called once per
-// sim tick, between mDoCPd_c::read() and fapGm_Execute(), so that all
-// game-state mutations from the network are applied in the same window that
-// the rest of the actor framework runs (see m_Do_main.cpp).
 void Tick();
+bool IsConnected();
 
-// Begin/end the realtime connection to a dusk-relay server. M1 wires these to
-// the ImGui debug HUD; later milestones drive them from the lobby UI.
-bool Connect(const std::string& url);
+// Session lifecycle. Both calls are synchronous (HTTP POST under the hood).
+// In M2 they are wired from the ImGui debug HUD; M6 will drive them from the
+// RmlUi lobby.
+//
+// On success the transport is opened against the server's WebSocket endpoint
+// and a Hello frame is sent automatically once the WebSocket reaches the
+// Connected state. The Stats struct surfaces the HelloAck-supplied player
+// index and any typed handshake error.
+struct HostSessionConfig {
+    std::string base_url;       // e.g. http://localhost:7777
+    std::string display_name;
+    std::array<std::uint8_t, 16> iso_hash{};
+};
+
+struct JoinSessionConfig {
+    std::string base_url;
+    std::string session_code;   // 6 chars (the alphabet is validated server-side)
+    std::string display_name;
+    std::array<std::uint8_t, 16> iso_hash{};
+};
+
+bool HostSession(const HostSessionConfig& cfg);
+bool JoinSession(const JoinSessionConfig& cfg);
 void Disconnect();
 
-// Push one binary frame onto the wire. Returns false if not currently
-// connected (or the transport refused the frame). M1 uses this for the debug
-// HUD's "send test frame" button; later milestones serialise real packets.
+// Push one binary frame onto the wire (debug HUD only at M2; real packets
+// from later milestones go through a typed helper).
 bool Send(std::span<const std::uint8_t> frame);
-
-bool IsConnected();
 
 enum class ConnectionState : std::uint8_t {
     Disconnected,
@@ -41,13 +51,28 @@ enum class ConnectionState : std::uint8_t {
     Closing,
 };
 
+enum class HandshakeError : std::uint8_t {
+    None,
+    Network,
+    IsoMismatch,
+    ProtocolVersion,
+    SessionNotFound,
+    SessionFull,
+    BadResponse,
+    Internal,
+};
+
 struct Stats {
-    ConnectionState state;
-    std::uint64_t framesReceived;
-    std::uint64_t framesSent;
-    std::uint64_t framesDropped;
-    std::size_t inboundQueueDepth;
-    std::uint64_t simTicks;
+    ConnectionState state = ConnectionState::Disconnected;
+    std::uint64_t framesReceived = 0;
+    std::uint64_t framesSent = 0;
+    std::uint64_t framesDropped = 0;
+    std::size_t inboundQueueDepth = 0;
+    std::uint64_t simTicks = 0;
+    std::string sessionCode;
+    std::uint8_t playerIndex = 0xFF;  // 0xFF = unset
+    HandshakeError handshakeError = HandshakeError::None;
+    std::string lastErrorMessage;
 };
 
 Stats GetStats();
