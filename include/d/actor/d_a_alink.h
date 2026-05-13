@@ -1806,11 +1806,13 @@ public:
     int procGoronRideWait();
     int execute();
 #if TARGET_PC
-    // Dusk multiplayer: high bit of fopAcM_GetParam flags a network-driven
-    // puppet (see include/dusk/net/replication.h). isPuppet() short-circuits
-    // controller-driven logic in create() and execute(); executePuppet() is
-    // the puppet's minimal per-frame update, implemented in d_a_alink_puppet.cpp.
-    bool isPuppet() const { return (fopAcM_GetParam(this) & 0x80000000u) != 0u; }
+    // Dusk multiplayer: a puppet daAlink_c is registered by its ProcID in
+    // dusk::net::replication. isPuppet() short-circuits controller-driven
+    // logic in create() and execute(); executePuppet() is the puppet's
+    // minimal per-frame update. Both are implemented in d_a_alink_puppet.cpp
+    // — keeping the body out of this header avoids pulling
+    // dusk/net/replication.h into the rest of the decomp.
+    bool isPuppet() const;
     int executePuppet();
 #endif
     void setDrawHand();

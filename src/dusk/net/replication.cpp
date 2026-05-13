@@ -32,8 +32,22 @@ bool g_colocated = false;
 // Outbound bookkeeping — touched only on the sim thread.
 std::uint32_t g_outboundTick = 0;
 std::optional<wire::PlayerPose> g_lastSentPose;
+// -1 = nothing recorded yet. g_localAnimId is updated by NoteLocalAnim()
+// from inside daAlink_c's anim setters; g_lastSentAnimId tracks what we've
+// already shipped so BroadcastLocalAnim() only sends on change. The tick
+// stamp lets us re-announce on a slow heartbeat (PlayerAnim is otherwise
+// purely event-driven, so a late-joining peer or a dropped packet would
+// leave the puppet stuck until the next animation change).
+int g_localAnimId = -1;
+int g_lastSentAnimId = -1;
+std::uint32_t g_lastSentAnimTick = 0;
 
-// Puppet-spawn bookkeeping — touched only on the sim thread.
+// Puppet-spawn bookkeeping — touched only on the sim thread. g_puppetId is
+// the puppet's ProcID once known; it's set both from fopAcM_create's return
+// value (a fallback) and authoritatively by RegisterPuppetId() when
+// daAlink_Create() detects the puppet. daAlink_c::isPuppet() doesn't depend
+// on g_puppetId being correct — it has an independent derivation — so the
+// id is used only by DespawnPuppet/PuppetExists.
 bool g_wantPuppet = false;
 fpc_ProcID g_puppetId = fpcM_ERROR_PROCESS_ID_e;
 
@@ -81,9 +95,16 @@ void FillStage(std::array<std::uint8_t, wire::kStageNameLen>& out, const char* n
 
 }  // namespace
 
+bool IsPuppetId(fpc_ProcID id) {
+    // For two-player co-op there's only ever one puppet so an integer
+    // comparison is enough; if we ever support N players this becomes a
+    // std::unordered_set lookup.
+    return id != fpcM_ERROR_PROCESS_ID_e && id == g_puppetId;
+}
+
 bool IsPuppet(const fopAc_ac_c* actor) {
     if (actor == nullptr) return false;
-    return (fopAcM_GetParam(actor) & kPuppetParamBit) != 0u;
+    return IsPuppetId(fopAcM_GetID(actor));
 }
 
 bool BroadcastLocalPose() {
@@ -144,6 +165,39 @@ bool BroadcastLocalPose() {
     return false;
 }
 
+void NoteLocalAnim(int anmId) {
+    // Sim-thread only. The Tick() pump diffs against g_lastSentAnimId.
+    if (anmId != g_localAnimId) {
+        DuskLog.debug("dusk::net::replication: local anim -> {}", anmId);
+    }
+    g_localAnimId = anmId;
+}
+
+bool BroadcastLocalAnim() {
+    if (g_localAnimId < 0) return false;
+    const bool heartbeat_due =
+        g_lastSentAnimId < 0 || (g_outboundTick - g_lastSentAnimTick) >= kHeartbeatTicks;
+    if (!heartbeat_due && g_localAnimId == g_lastSentAnimId) return false;
+
+    wire::PlayerAnim anim;
+    anim.anim_id = static_cast<std::uint16_t>(g_localAnimId);
+    // Receiver replays from the animation's natural start frame (the puppet
+    // re-runs setSingleAnimeBase, which seeds the frame the same way), so 0
+    // is consistent with how the host's setSingleAnime call started it. Held
+    // item / wolf form aren't replicated yet — see the M3 follow-up notes.
+    anim.frame = 0.f;
+    anim.transform = wire::kTransformHuman;
+    anim.held_item = wire::kHeldItemNone;
+
+    auto bytes = wire::Encode(wire::Frame{anim});
+    if (Send(bytes)) {
+        g_lastSentAnimId = g_localAnimId;
+        g_lastSentAnimTick = g_outboundTick;
+        return true;
+    }
+    return false;
+}
+
 bool EmitLocalSceneAnnounce() {
     wire::SceneAnnounce announce;
     FillStage(announce.stage, dComIfGp_getStartStageName());
@@ -168,11 +222,28 @@ bool EmitLocalSceneAnnounce() {
 void OnPeerPose(const wire::PlayerPose& pose) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_latestPose = pose;
+    // The pose stream carries stage/room every tick, so it's a far more
+    // reliable co-location source than SceneAnnounce (which only fires on a
+    // scene transition — a pair that connects while already in the same scene
+    // would otherwise never see each other). Treat the latest pose as the
+    // peer's authoritative scene.
+    if (!g_peerScene || g_peerScene->stage != pose.stage || g_peerScene->room != pose.room) {
+        wire::SceneAnnounce s;
+        s.stage = pose.stage;
+        s.room = pose.room;
+        s.spawn = 0;
+        g_peerScene = s;
+        RecomputeColocation();
+    }
 }
 
 void OnPeerAnim(const wire::PlayerAnim& anim) {
     std::lock_guard<std::mutex> lock(g_mutex);
+    const bool changed = !g_latestAnim || g_latestAnim->anim_id != anim.anim_id;
     g_latestAnim = anim;
+    if (changed) {
+        DuskLog.debug("dusk::net::replication: peer anim -> {}", anim.anim_id);
+    }
 }
 
 void OnPeerSceneAnnounce(const wire::SceneAnnounce& announce) {
@@ -199,22 +270,43 @@ bool IsColocated() {
     return g_colocated;
 }
 
+bool IsPeerInDifferentScene() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_peerScene || !g_localScene) return false;  // unknown -> fail open
+    return g_peerScene->stage != g_localScene->stage
+        || g_peerScene->room != g_localScene->room;
+}
+
 void RequestPuppetSpawn() {
     g_wantPuppet = true;
 }
 
+void RegisterPuppetId(fpc_ProcID id) {
+    g_puppetId = id;
+    DuskLog.debug("dusk::net::replication: puppet id registered = {}", id);
+}
+
 bool PuppetExists() {
-    return g_puppetId != fpcM_ERROR_PROCESS_ID_e
-        && fopAcM_SearchByID(g_puppetId) != nullptr;
+    if (g_puppetId == fpcM_ERROR_PROCESS_ID_e) return false;
+    if (fopAcM_SearchByID(g_puppetId) != nullptr) return true;
+    // The actor framework has collected the puppet; only now is it safe to
+    // forget the ProcID. Crucially we do NOT clear g_puppetId in
+    // DespawnPuppet() — fopAcM_delete only flags the actor, and ~daAlink_c()
+    // runs on a later delete pass; isPuppet() must still resolve true inside
+    // that destructor or it will clobber the local player's state.
+    g_puppetId = fpcM_ERROR_PROCESS_ID_e;
+    return false;
 }
 
 void DespawnPuppet() {
     g_wantPuppet = false;
     if (g_puppetId != fpcM_ERROR_PROCESS_ID_e) {
+        DuskLog.debug("dusk::net::replication: despawning puppet id={}", g_puppetId);
         if (auto* puppet = fopAcM_SearchByID(g_puppetId)) {
             fopAcM_delete(puppet);
         }
-        g_puppetId = fpcM_ERROR_PROCESS_ID_e;
+        // g_puppetId stays set until PuppetExists() confirms the actor is
+        // gone — see the comment there.
     }
 }
 
@@ -233,20 +325,59 @@ void MaybeSpawnPuppet() {
 
     cXyz pos = link->current.pos;
     csXyz angle = link->shape_angle;
-    const u32 parameters = kPuppetParamBit;
+    // Parameters = 0 — the puppet's "I'm a puppet" identity is derived in
+    // daAlink_c::isPuppet() (a Link that isn't the registered local player),
+    // not from anything in this u32.
+    const u32 parameters = 0;
 
-    g_puppetId = fopAcM_create(
+    const fpc_ProcID id = fopAcM_create(
         fpcNm_ALINK_e, parameters, &pos, fopAcM_GetRoomNo(link),
         &angle, /*scale=*/nullptr, /*argument=*/-1);
-    if (g_puppetId == fpcM_ERROR_PROCESS_ID_e) {
+    if (id == fpcM_ERROR_PROCESS_ID_e) {
         DuskLog.warn("dusk::net::replication: puppet spawn failed; will retry");
         return;
     }
-    DuskLog.debug("dusk::net::replication: puppet spawned id={}", g_puppetId);
+    // Fallback: daAlink_Create() also calls RegisterPuppetId with the actor's
+    // own ProcID, which is authoritative. This handles the case where the
+    // create() detection somehow missed (it shouldn't).
+    if (g_puppetId == fpcM_ERROR_PROCESS_ID_e) {
+        g_puppetId = id;
+    }
+    DuskLog.debug("dusk::net::replication: puppet spawn requested id={}", id);
     g_wantPuppet = false;
 }
 
 }  // namespace
+
+DebugPuppetInfo GetDebugPuppetInfo() {
+    DebugPuppetInfo info;
+    info.puppetId = g_puppetId;
+    if (g_puppetId != fpcM_ERROR_PROCESS_ID_e) {
+        if (const fopAc_ac_c* puppet = fopAcM_SearchByID(g_puppetId)) {
+            info.puppetExists = true;
+            info.puppetRecognized = IsPuppet(puppet);
+            info.puppetPos[0] = puppet->current.pos.x;
+            info.puppetPos[1] = puppet->current.pos.y;
+            info.puppetPos[2] = puppet->current.pos.z;
+        }
+    }
+    if (const fopAc_ac_c* link = dComIfGp_getLinkPlayer()) {
+        info.localLinkExists = true;
+        info.localLinkRecognizedAsPuppet = IsPuppet(link);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_latestPose) {
+            info.hasPeerPose = true;
+            info.peerPoseTick = g_latestPose->tick;
+            info.peerPos[0] = g_latestPose->pos[0];
+            info.peerPos[1] = g_latestPose->pos[1];
+            info.peerPos[2] = g_latestPose->pos[2];
+        }
+        info.colocated = g_colocated;
+    }
+    return info;
+}
 
 void Tick() {
     MaybeSpawnPuppet();
@@ -258,6 +389,7 @@ void Tick() {
     if (!IsConnected()) return;
     if (GetStats().playerIndex == 0xFF) return;
     BroadcastLocalPose();
+    BroadcastLocalAnim();
 }
 
 }  // namespace dusk::net::replication

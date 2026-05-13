@@ -53,6 +53,10 @@
 
 #include "dusk/frame_interpolation.h"
 #include "dusk/settings.h"
+#if TARGET_PC && DUSK_ENABLE_MULTIPLAYER
+#include "dusk/logging.h"
+#include "dusk/net/replication.h"
+#endif
 #include "res/Object/Alink.h"
 #include <cstring>
 
@@ -4921,6 +4925,10 @@ int daAlink_c::create() {
         // Dusk multiplayer: a puppet daAlink_c mirrors a peer's transforms
         // and must not claim the local player slot. The local Link still
         // registers itself normally below in the non-puppet path.
+#if DUSK_ENABLE_MULTIPLAYER
+        DuskLog.debug("ALINK create: this={} isPuppet={} getLinkPlayer={}",
+                      (const void*)this, isPuppet(), (const void*)dComIfGp_getLinkPlayer());
+#endif
         if (!isPuppet()) {
             dComIfGp_setPlayer(0, this);
             dComIfGp_setLinkPlayer(this);
@@ -5034,7 +5042,14 @@ int daAlink_c::create() {
 
     bgWaitFlg = FALSE;
 
-    dComIfGs_setRestartRoom(current.pos, shape_angle.y, getStartRoomNo());
+#if TARGET_PC && DUSK_ENABLE_MULTIPLAYER
+    // Dusk co-op: the puppet is spawned mid-scene at the local Link's
+    // position; it must not move the global death-respawn point.
+    if (!isPuppet())
+#endif
+    {
+        dComIfGs_setRestartRoom(current.pos, shape_angle.y, getStartRoomNo());
+    }
     field_0x3780 = current.pos;
     mLinkAcch.ClrGndThinCellingOff();
 
@@ -5064,7 +5079,25 @@ int daAlink_c::create() {
         mNowAnmPackUpper[0].setAnmTransform(underBck);
     }
 
-    int midna_prm = setStartProcInit();
+    int midna_prm;
+#if TARGET_PC && DUSK_ENABLE_MULTIPLAYER
+    // Dusk co-op: a puppet is driven entirely by replicated pose/anim, so it
+    // skips Link's spawn-state/action init. setStartProcInit() reads the
+    // start-mode / last-scene globals (getStartMode, getLastSceneMode, equip
+    // item from the high byte of the last-scene mode, …) which describe how
+    // the *local* player entered the scene, not a mid-scene actor spawn — on a
+    // puppet respawn they're stale and land it in a bad proc (the source of
+    // the U_GetAtanTable warning spam and the respawn crash). Just sit it in
+    // PROC_WAIT with no equipped item; executePuppet() takes over next tick.
+    if (isPuppet()) {
+        mEquipItem = dItemNo_NONE_e;
+        procWaitInit();
+        midna_prm = 0;  // unused — the puppet doesn't spawn a Midna companion
+    } else
+#endif
+    {
+        midna_prm = setStartProcInit();
+    }
     setSelectEquipItem(FALSE);
     setMatrix();
     allAnimePlay();
@@ -5140,6 +5173,18 @@ int daAlink_c::create() {
 static int daAlink_Create(fopAc_ac_c* actor) {
     daAlink_c* i_this = (daAlink_c*)actor;
     fpc_ProcID id = fopAcM_GetID(actor);
+#if TARGET_PC && DUSK_ENABLE_MULTIPLAYER
+    // Dusk multiplayer: a daAlink_c created while a *different* Link is
+    // already registered as the local player can only be a co-op puppet —
+    // the game never has two local Links. Register its ProcID so the
+    // despawn machinery can find it. (isPuppet() derives the same fact
+    // independently, so the create()-time gates work regardless.)
+    if (dComIfGp_getLinkPlayer() != nullptr
+        && (fopAc_ac_c*)dComIfGp_getLinkPlayer() != actor)
+    {
+        dusk::net::replication::RegisterPuppetId(id);
+    }
+#endif
     return i_this->create();
 }
 
@@ -7092,6 +7137,16 @@ int daAlink_c::setDoubleAnime(f32 i_blendRate, f32 i_anmSpeedA, f32 i_anmSpeedB,
     }
 #endif
 
+#if TARGET_PC && DUSK_ENABLE_MULTIPLAYER
+    // Dusk multiplayer: blended-locomotion animation. Report whichever of the
+    // two clips currently has the higher weight as the local Link's anim — the
+    // puppet plays it as a single clip, so walk/run pop at the 0.5 crossover
+    // instead of cross-fading, which reads fine. See setSingleAnime.
+    if (!isPuppet()) {
+        dusk::net::replication::NoteLocalAnim(i_blendRate >= 0.5f ? i_anmB : i_anmA);
+    }
+#endif
+
     J3DAnmTransform* under_bck1;
     J3DAnmTransform* upper_bck1;
     J3DAnmTransform* under_bck2;
@@ -7245,6 +7300,16 @@ int daAlink_c::setSingleAnime(daAlink_c::daAlink_ANM i_anmID, f32 i_speed, f32 i
         JUT_ASSERT(8861, FALSE);
     }
     #endif
+
+#if TARGET_PC && DUSK_ENABLE_MULTIPLAYER
+    // Dusk multiplayer: record the body animation the local Link just switched
+    // to so the net pump (dusk::net::replication::BroadcastLocalAnim) can ship
+    // it to the peer's puppet. Puppets are driven by replicated anim, not by
+    // their own setSingleAnime calls, so skip them.
+    if (!isPuppet()) {
+        dusk::net::replication::NoteLocalAnim(i_anmID);
+    }
+#endif
 
     getUnderUpperAnime(i_anmID, &under_bck, &upper_bck, 0, 0x10800);
     commonSingleAnime(under_bck, upper_bck, i_speed, i_start, i_end);
@@ -19433,6 +19498,17 @@ void daAlink_c::initTevCustomColor() {
 }
 
 int daAlink_c::draw() {
+#if TARGET_PC && DUSK_ENABLE_MULTIPLAYER
+    // Dusk multiplayer: hide the puppet only when we *positively* know the peer
+    // is in a different stage/room — not merely when co-location is unconfirmed
+    // (e.g. the peer's first pose hasn't arrived yet). Otherwise a freshly
+    // spawned puppet would be invisible until the scene caches converge.
+    // executePuppet() keeps running every tick, so the puppet pops back in at
+    // the right spot the moment the players reunite.
+    if (isPuppet() && dusk::net::replication::IsPeerInDifferentScene()) {
+        return 1;
+    }
+#endif
     if (checkWolf()) {
         g_env_light.settingTevStruct(9, &current.pos, &tevStr);
     } else {
@@ -19819,8 +19895,18 @@ static int daAlink_Draw(daAlink_c* i_this) {
 }
 
 daAlink_c::~daAlink_c() {
+#if TARGET_PC
+    // Dusk multiplayer: player-status slot 0 belongs to the local Link, not
+    // the puppet — clearing it from the puppet's destructor would corrupt
+    // the live player's state and crash on the next frame.
+    if (!isPuppet()) {
+        dComIfGp_clearPlayerStatus0(0, ~0x400030);
+        dComIfGp_clearPlayerStatus1(0, 0x7FB7B78);
+    }
+#else
     dComIfGp_clearPlayerStatus0(0, ~0x400030);
     dComIfGp_clearPlayerStatus1(0, 0x7FB7B78);
+#endif
 
     #if DEBUG
     mpHIO->removeHIO();

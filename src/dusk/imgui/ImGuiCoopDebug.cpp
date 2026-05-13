@@ -165,18 +165,38 @@ void ImGuiMenuTools::ShowCoopDebug() {
         }
         ImGui::EndDisabled();
 
-        // Puppet controls — visible regardless of connection state so we can
-        // spawn / despawn even offline while iterating.
-        const bool puppet_exists = net::replication::PuppetExists();
-        ImGuiStringViewText(fmt::format(FMT_STRING("Puppet:       {}\n"),
-            puppet_exists ? "spawned" : "(none)"));
-        ImGui::BeginDisabled(puppet_exists);
+        // Puppet controls + diagnostics.
+        const auto dbg = net::replication::GetDebugPuppetInfo();
+        ImGui::Separator();
+        ImGuiStringViewText(fmt::format(FMT_STRING("Puppet:       {}  id={}\n"),
+            dbg.puppetExists ? "spawned" : "(none)", dbg.puppetId));
+        if (dbg.puppetExists) {
+            // puppetRecognized must be true; localLinkRecognizedAsPuppet must
+            // be false. If either is wrong, that's the bug.
+            const bool ok = dbg.puppetRecognized && !dbg.localLinkRecognizedAsPuppet;
+            if (!ok) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 96, 96, 255));
+            ImGuiStringViewText(fmt::format(FMT_STRING("  recognized:  {}\n"), dbg.puppetRecognized));
+            ImGuiStringViewText(fmt::format(FMT_STRING("  local-link-is-puppet?: {}  (must be false)\n"),
+                dbg.localLinkRecognizedAsPuppet));
+            if (!ok) ImGui::PopStyleColor();
+            ImGuiStringViewText(fmt::format(FMT_STRING("  puppet pos:  {: .1f}, {: .1f}, {: .1f}\n"),
+                dbg.puppetPos[0], dbg.puppetPos[1], dbg.puppetPos[2]));
+        }
+        ImGuiStringViewText(fmt::format(FMT_STRING("Peer pose:    {}\n"),
+            dbg.hasPeerPose ? "yes" : "(none received)"));
+        if (dbg.hasPeerPose) {
+            ImGuiStringViewText(fmt::format(FMT_STRING("  tick {}  pos {: .1f}, {: .1f}, {: .1f}\n"),
+                dbg.peerPoseTick, dbg.peerPos[0], dbg.peerPos[1], dbg.peerPos[2]));
+        }
+        ImGuiStringViewText(fmt::format(FMT_STRING("Colocated:    {}\n"), dbg.colocated));
+
+        ImGui::BeginDisabled(dbg.puppetExists);
         if (ImGui::Button("Spawn puppet")) {
             net::replication::RequestPuppetSpawn();
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::BeginDisabled(!puppet_exists);
+        ImGui::BeginDisabled(!dbg.puppetExists);
         if (ImGui::Button("Despawn puppet")) {
             net::replication::DespawnPuppet();
         }
