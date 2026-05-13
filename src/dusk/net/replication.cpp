@@ -220,6 +220,13 @@ bool EmitLocalSceneAnnounce() {
 }
 
 void OnPeerPose(const wire::PlayerPose& pose) {
+    // A peer pose means a peer is present and active — keep wanting a puppet
+    // (MaybeSpawnPuppet re-spawns it after every scene transition, since the
+    // puppet is a scene actor and dies with the scene). Cleared on Disconnect /
+    // the debug HUD's Despawn. g_wantPuppet is sim-thread-only and OnPeerPose
+    // runs on the sim thread (net::Tick's inbound drain).
+    g_wantPuppet = true;
+
     std::lock_guard<std::mutex> lock(g_mutex);
     g_latestPose = pose;
     // The pose stream carries stage/room every tick, so it's a far more
@@ -314,10 +321,10 @@ namespace {
 
 void MaybeSpawnPuppet() {
     if (!g_wantPuppet) return;
-    if (PuppetExists()) {
-        g_wantPuppet = false;
-        return;
-    }
+    // Already spawned — nothing to do. We deliberately keep g_wantPuppet set so
+    // that when the puppet dies with a scene transition we re-spawn it in the
+    // new scene next time Link is ready.
+    if (PuppetExists()) return;
     // We need the local player loaded to spawn next to them; if Link isn't
     // ready yet (still loading the scene), defer to the next tick.
     daPy_py_c* link = dComIfGp_getLinkPlayer();
@@ -344,7 +351,6 @@ void MaybeSpawnPuppet() {
         g_puppetId = id;
     }
     DuskLog.debug("dusk::net::replication: puppet spawn requested id={}", id);
-    g_wantPuppet = false;
 }
 
 }  // namespace
@@ -380,6 +386,12 @@ DebugPuppetInfo GetDebugPuppetInfo() {
 }
 
 void Tick() {
+    // GC the puppet ProcID as soon as the actor framework has collected it,
+    // even while disconnected (MaybeSpawnPuppet only does this while it wants a
+    // puppet) — keeps a stale g_puppetId from ever colliding with a recycled
+    // ProcID and making isPuppet() misfire on a real Link.
+    (void)PuppetExists();
+
     MaybeSpawnPuppet();
 
     // Gate outbound replication on a complete handshake. Stats.playerIndex

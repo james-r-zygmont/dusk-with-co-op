@@ -265,4 +265,30 @@ ApiResult<SaveBlobResponse> ApiGetSessionSave(
     }
 }
 
+ApiResult<std::optional<std::string>> ApiGetLatestSession(const std::string& base_url) {
+    using R = ApiResult<std::optional<std::string>>;
+    const std::string url = base_url + "/v1/dev/latest-session";
+    auto resp = do_get(url);
+    if (resp->statusCode == 0) {
+        DuskLog.warn("dusk::net: GetLatestSession network error: {}", resp->errorMsg);
+        return R::failure(make_network_error(0, resp->errorMsg));
+    }
+    if (resp->statusCode == 404) {
+        return R::success(std::nullopt);  // relay has no sessions
+    }
+    if (resp->statusCode != 200) {
+        return R::failure(parse_typed_error(resp->statusCode, resp->body));
+    }
+    try {
+        const auto j = json::parse(resp->body);
+        return R::success(j.at("code").get<std::string>());
+    } catch (const std::exception& e) {
+        ApiError err;
+        err.kind = ApiErrorKind::UnexpectedResponse;
+        err.http_status = resp->statusCode;
+        err.message = std::string("body parse: ") + e.what();
+        return R::failure(std::move(err));
+    }
+}
+
 }  // namespace dusk::net

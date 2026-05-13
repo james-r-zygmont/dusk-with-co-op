@@ -8,12 +8,21 @@
 #include "dusk/net/transport.h"
 #include "dusk/net/wire.h"
 
+#include "d/d_com_inf_game.h"  // dComIfGp_getLinkPlayer — dev auto-connect readiness gate
+
 #include <atomic>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
+
+// DEV HACK: when set, the first locally-launched instance to reach a stage
+// (Link spawned, so a save is loaded) auto-hosts a co-op session, and later
+// instances auto-join the most-recent session the relay reports. Lets two
+// instances pair up without touching the debug HUD. The relay wipes its
+// sessions on startup, so "most recent" is the live one. Set to 0 to disable.
+#define DUSK_DEV_AUTOCONNECT_COOP 1
 
 namespace dusk::net {
 
@@ -48,6 +57,9 @@ std::atomic<std::uint32_t> g_canonicalSaveVersion{0};
 // Pending Hello to emit when the transport first hits Connected.
 bool g_hasPendingHello = false;
 wire::Hello g_pendingHello{};
+
+// One-shot guard for the dev auto-connect (see DUSK_DEV_AUTOCONNECT_COOP).
+bool g_devAutoConnectTried = false;
 
 ConnectionState ToConnectionState(TransportState s) {
     switch (s) {
@@ -149,6 +161,43 @@ void MaybeSyncCanonicalSave() {
             DuskLog.warn("dusk::net: pull canonical save failed: {}", r.error().message);
         }
     }
+}
+
+// DEV HACK (DUSK_DEV_AUTOCONNECT_COOP). Runs each sim tick until it fires once:
+// when Link is spawned (we're in a stage so a save is loaded) and we aren't
+// already connecting/connected, ask the relay for the most-recent session — if
+// there is one, join it; otherwise host. The REST round-trips run on the sim
+// thread (one-time hitch). A dummy all-zero iso_hash is used; both dev clients
+// agree on it so the handshake passes.
+void DevAutoConnect() {
+#if DUSK_DEV_AUTOCONNECT_COOP
+    if (g_devAutoConnectTried) return;
+    if (!g_transport || g_transport->state() != TransportState::Disconnected) return;
+    if (dComIfGp_getLinkPlayer() == nullptr) return;  // not in a stage yet
+    g_devAutoConnectTried = true;
+
+    const std::string base = "http://localhost:7777";
+    auto latest = ApiGetLatestSession(base);
+    if (!latest.ok()) {
+        DuskLog.warn("dusk::net: dev auto-connect: latest-session query failed ({}); "
+                     "use the Co-op Debug HUD to connect manually", latest.error().message);
+        return;
+    }
+    if (latest.value().has_value()) {
+        JoinSessionConfig cfg;
+        cfg.base_url = base;
+        cfg.session_code = *latest.value();
+        cfg.display_name = "DevGuest";
+        DuskLog.debug("dusk::net: dev auto-connect: joining session {}", cfg.session_code);
+        JoinSession(cfg);
+    } else {
+        HostSessionConfig cfg;
+        cfg.base_url = base;
+        cfg.display_name = "DevHost";
+        DuskLog.debug("dusk::net: dev auto-connect: no session found; hosting");
+        HostSession(cfg);
+    }
+#endif
 }
 
 }  // namespace
@@ -275,6 +324,8 @@ std::uint32_t GetCanonicalSaveVersion() {
 void Tick() {
     g_simTicks.fetch_add(1, std::memory_order_relaxed);
     if (!g_transport) return;
+
+    DevAutoConnect();
 
     // Send pending Hello on the rising edge of Connected.
     const auto state = g_transport->state();

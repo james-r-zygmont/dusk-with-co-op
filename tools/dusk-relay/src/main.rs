@@ -79,6 +79,19 @@ async fn main() -> Result<()> {
     tracing::info!(bind = %args.bind, db = %args.db.display(), "starting dusk-relay");
 
     let db = Db::open(&args.db)?;
+
+    // DEV: wipe all sessions/saves on startup so co-op dev runs always begin
+    // from a clean slate (the auto-connect path picks "the most recent
+    // session", which is only meaningful if stale rows from previous runs are
+    // gone). Remove this before the relay is expected to persist real saves.
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "DELETE FROM player_profiles; DELETE FROM sessions; DELETE FROM saves;",
+        )?;
+        Ok(())
+    })?;
+    tracing::warn!("DEV: wiped all sessions/saves on startup");
+
     let state = AppState {
         db,
         sessions: SessionMap::new(),
@@ -93,6 +106,7 @@ async fn main() -> Result<()> {
             "/v1/sessions/:code/save",
             get(routes::get_session_save).put(routes::put_session_save),
         )
+        .route("/v1/dev/latest-session", get(routes::get_latest_session))
         .route("/v1/session/:code/ws", get(ws::ws_handler))
         .with_state(state)
         .layer(TraceLayer::new_for_http());

@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <variant>
@@ -93,6 +94,11 @@ ApiResult<SaveBlobResponse> ApiGetSessionSave(
     const std::string& base_url,
     const std::string& session_code,
     const std::string& token);
+
+// GET /v1/dev/latest-session — the most-recently-created session code, or
+// nullopt if the relay currently has none. Used only by the dev auto-connect
+// path (the relay wipes sessions on startup, so this is unambiguous).
+ApiResult<std::optional<std::string>> ApiGetLatestSession(const std::string& base_url);
 
 }  // namespace dusk::net
 

@@ -201,6 +201,40 @@ pub async fn get_session(
     Ok(Json(status))
 }
 
+// --- dev helpers --------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct LatestSessionResponse {
+    pub code: String,
+}
+
+// GET /v1/dev/latest-session  — returns the most-recently-created session code,
+// or 404 if there are none. Used by the dev auto-connect path so a second
+// client can discover the first client's session without a lobby UI. (The
+// relay wipes all sessions on startup, so "most recent" is unambiguous within
+// one relay run.)
+pub async fn get_latest_session(
+    State(state): State<AppState>,
+) -> Result<Json<LatestSessionResponse>, AppError> {
+    let db = state.db.clone();
+    let code = tokio::task::spawn_blocking(move || -> Result<String, AppError> {
+        db.with_conn(|conn| -> anyhow::Result<String> {
+            conn.query_row(
+                "SELECT code FROM sessions ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => anyhow::Error::new(NotFoundMarker),
+                other => anyhow::Error::new(other),
+            })
+        })
+        .map_err(map_lookup_err)
+    })
+    .await??;
+    Ok(Json(LatestSessionResponse { code }))
+}
+
 // --- canonical save (M4 chunk 1) ---------------------------------------------
 
 #[derive(Deserialize)]
